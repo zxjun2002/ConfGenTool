@@ -1,0 +1,20 @@
+{
+  "classes": [
+    {
+      "className": "Item",
+      "FilePath": ".\\Configs\\Item\\Item.csv"
+    },
+    {
+      "className": "TestItem",
+      "FilePath": ".\\Configs\\Item\\TestItem.csv"
+    },
+    {
+      "className": "BuffCt",
+      "FilePath": ".\\Configs\\Buff\\buff_ct.xlsx"
+    },
+    {
+      "className": "EffectCt",
+      "FilePath": ".\\Configs\\Buff\\buff_ct.xlsx"
+    }
+  ]
+}
