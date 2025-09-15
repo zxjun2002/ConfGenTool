@@ -7,7 +7,6 @@ using System.Linq;
 using System.Reflection;
 using System.Runtime.Loader;
 using System.Text;
-using System.Text.Json;
 using CsvHelper;
 using CsvHelper.Configuration;
 using ExcelDataReader;
@@ -32,7 +31,7 @@ public static class ConfGen
         Directory.CreateDirectory(Path.GetDirectoryName(outCodeFile)!);
         Directory.CreateDirectory(outRacastDir);
 
-        const string tip = "/// <summary>\n/// 此代码为自动生成, 修改无意义, 重新生成会被覆盖\n/// </summary>\n\n";
+        const string tip  = "/// <summary>\n/// 此代码为自动生成, 修改无意义, 重新生成会被覆盖\n/// </summary>\n\n";
         const string head = "using MemoryPack;\nusing System.Collections.Generic;\n\n";
 
         var sbField = new StringBuilder();
@@ -59,7 +58,6 @@ public static class ConfGen
 
             sbDef.Append(cs);
         }
-
         sbField.AppendLine("}");
 
         var final = new StringBuilder();
@@ -74,7 +72,7 @@ public static class ConfGen
         // 生成 RacastSet（含 IRacastSet）
         var folderClasses = GroupByFolder(scan);
         EnsureIRacastSet(outRacastDir);
-        DoGenRacastSet(folderClasses, outRacastDir);
+        DoGenRacastSet(folderClasses, outRacastDir, scan);
 
         Console.WriteLine("[ConfGen] Code & Racast generated.");
     }
@@ -268,11 +266,13 @@ public static class ConfGen
             };
 
             List<string> propertyNames;
-            List<string> propertyTypes;
+            List<string> propertyTypes;   // 第3行：类型
+            List<int?>   keyPriorities;   // 第2行：优先级
 
             using (var reader = new StreamReader(file))
             using (var csv = new CsvReader(reader, config))
             {
+                // 第1行：列名
                 if (!csv.Read() || !csv.ReadHeader())
                 {
                     Console.WriteLine($"[Warn] CSV {file} 缺少表头");
@@ -280,15 +280,23 @@ public static class ConfGen
                 }
                 propertyNames = csv.HeaderRecord.ToList();
 
+                // 第2行：优先级
+                if (!csv.Read())
+                {
+                    Console.WriteLine($"[Warn] CSV {file} 缺少优先级行");
+                    continue;
+                }
+                keyPriorities = ParsePriorityRow(propertyNames.Count, i => csv.GetField(i));
+
+                // 第3行：类型
                 if (!csv.Read())
                 {
                     Console.WriteLine($"[Warn] CSV {file} 缺少类型行");
                     continue;
                 }
-
-                propertyTypes = new List<string>();
-                foreach (var header in propertyNames)
-                    propertyTypes.Add(csv.GetField(header));
+                propertyTypes = new List<string>(propertyNames.Count);
+                for (int i = 0; i < propertyNames.Count; i++)
+                    propertyTypes.Add(csv.GetField(i)?.Trim() ?? "string");
             }
 
             if (propertyNames.Count != propertyTypes.Count)
@@ -308,11 +316,12 @@ public static class ConfGen
 
             result.classes.Add(new ClassContent
             {
-                className = className,
-                fileName  = className,
-                FilePath  = file,
-                classDef  = "",
-                props     = props,
+                className     = className,
+                fileName      = className,
+                FilePath      = file,
+                classDef      = "",
+                props         = props,
+                keyPriorities = keyPriorities
             });
         }
 
@@ -326,21 +335,36 @@ public static class ConfGen
             {
                 string sheetName = reader.Name;
                 var propertyNames = new List<string>();
-                var propertyTypes = new List<string>();
+                var propertyTypes = new List<string>(); // 第3行
+                var keyPriorities = new List<int?>();   // 第2行
 
-                bool isHeader = true;
+                bool gotHeader = false, gotPriority = false, gotType = false;
+
                 while (reader.Read())
                 {
-                    if (isHeader)
+                    if (!gotHeader)
                     {
                         for (int i = 0; i < reader.FieldCount; i++)
                             propertyNames.Add(reader.GetString(i)?.Trim() ?? string.Empty);
-                        isHeader = false;
+                        gotHeader = true;
+                        continue;
                     }
-                    else
+
+                    if (!gotPriority)
+                    {
+                        keyPriorities = ParsePriorityRow(
+                            propertyNames.Count,
+                            i => reader.IsDBNull(i) ? "" : reader.GetValue(i)?.ToString()
+                        );
+                        gotPriority = true;
+                        continue;
+                    }
+
+                    if (!gotType)
                     {
                         for (int i = 0; i < reader.FieldCount; i++)
                             propertyTypes.Add(reader.GetString(i)?.Trim() ?? "string");
+                        gotType = true;
                         break;
                     }
                 }
@@ -363,11 +387,12 @@ public static class ConfGen
 
                 result.classes.Add(new ClassContent
                 {
-                    className = className,
-                    fileName  = className,
-                    FilePath  = file,
-                    classDef  = "",
-                    props     = props
+                    className     = className,
+                    fileName      = className,
+                    FilePath      = file,
+                    classDef      = "",
+                    props         = props,
+                    keyPriorities = keyPriorities
                 });
 
             } while (reader.NextResult());
@@ -393,36 +418,84 @@ public static class ConfGen
         return dict;
     }
 
-    private static void DoGenRacastSet(Dictionary<string, List<(string className, string classFieldName)>> folderClasses,
-                                       string outRacastDir)
+    private static void DoGenRacastSet(
+        Dictionary<string, List<(string className, string classFieldName)>> folderClasses,
+        string outRacastDir,
+        GenCodeContent scan)
     {
         Directory.CreateDirectory(outRacastDir);
+
+        // meta：className -> ClassContent（含优先级）
+        var meta = scan.classes.ToDictionary(c => c.className, c => c);
 
         foreach (var kv in folderClasses)
         {
             string folderName = string.IsNullOrEmpty(kv.Key) ? "Root" : kv.Key;
             var classes = kv.Value;
-            string structName = $"{folderName}RacastSet";
+            string typeName = $"{folderName}RacastSet";
+
+            // 每个 RacastSet 独立子目录
+            string setDir = Path.Combine(outRacastDir, typeName);
+            Directory.CreateDirectory(setDir);
 
             var sb = new StringBuilder();
             sb.AppendLine("using System.Collections.Generic;");
             sb.AppendLine("using System.Linq;");
             sb.AppendLine();
-            sb.AppendLine($"public struct {structName} : IRacastSet");
+            sb.AppendLine($"public sealed partial class {typeName} : IRacastSet");
             sb.AppendLine("{");
+            // 字段：仅按优先级链生成，字段名固定 {ClassName}Ct
             foreach (var (className, _) in classes)
-                sb.AppendLine($"    public Dictionary<int, {className}> {className}Ct {{ get; private set; }}");
+            {
+                var c = meta[className];
+                var chain = ExtractKeyChain(c);
+                if (chain.Count == 0)
+                {
+                    sb.AppendLine($"    // {className}: 未配置优先级，未生成索引字段");
+                    continue;
+                }
+                sb.AppendLine(EmitIndexFieldDeclCt(className, c.props, chain));
+            }
             sb.AppendLine();
-            sb.AppendLine($"    public {structName}(ConfData data)");
+            sb.AppendLine($"    public {typeName}(ConfData data)");
             sb.AppendLine("    {");
             foreach (var (className, fieldName) in classes)
-                sb.AppendLine($"        {className}Ct = data.{fieldName}.ToDictionary(es => es.id);");
+            {
+                var c = meta[className];
+                var chain = ExtractKeyChain(c);
+                if (chain.Count == 0) continue;
+                sb.AppendLine(EmitIndexCtorCt(className, fieldName, c.props, chain));
+            }
+            sb.AppendLine("        OnAfterInit();");
             sb.AppendLine("    }");
+            sb.AppendLine();
+            sb.AppendLine("    // 在 *.Logic.cs 中实现；未实现则无开销");
+            sb.AppendLine("    partial void OnAfterInit();");
             sb.AppendLine("}");
 
-            var outPath = Path.Combine(outRacastDir, $"{structName}.cs");
-            File.WriteAllText(outPath, sb.ToString(), new UTF8Encoding(false));
-            Console.WriteLine($"[ConfGen] 生成 {structName}.cs");
+            var autoPath = Path.Combine(setDir, $"{typeName}.cs");
+            File.WriteAllText(autoPath, sb.ToString(), new UTF8Encoding(false));
+            Console.WriteLine($"[ConfGen] 生成 {typeName}/{typeName}.cs");
+
+            // 首次生成 Logic 文件（不覆盖）
+            var logicPath = Path.Combine(setDir, $"{typeName}.Logic.cs");
+            if (!File.Exists(logicPath))
+            {
+                var sbLogic = new StringBuilder();
+                sbLogic.AppendLine("// 自定义扩展：此文件仅首次生成，之后不会被覆盖");
+                sbLogic.AppendLine("using System.Collections.Generic;");
+                sbLogic.AppendLine("using System.Linq;");
+                sbLogic.AppendLine();
+                sbLogic.AppendLine($"public sealed partial class {typeName}");
+                sbLogic.AppendLine("{");
+                sbLogic.AppendLine("    partial void OnAfterInit()");
+                sbLogic.AppendLine("    {");
+                sbLogic.AppendLine("        // TODO: 在这里构建你的业务索引/缓存");
+                sbLogic.AppendLine("    }");
+                sbLogic.AppendLine("}");
+                File.WriteAllText(logicPath, sbLogic.ToString(), new UTF8Encoding(false));
+                Console.WriteLine($"[ConfGen] 创建 {typeName}/{typeName}.Logic.cs");
+            }
         }
     }
 
@@ -454,20 +527,28 @@ public static class ConfGen
         using var reader = new StreamReader(filePath);
         using var csv = new CsvReader(reader, config);
 
+        // 第1行：表头
         if (!csv.Read() || !csv.ReadHeader())
         {
             Console.WriteLine($"[Warn] CSV {filePath} 缺少表头");
             return;
         }
-
         headerNames.AddRange(csv.HeaderRecord.Select(ReadConfEditorUtil.ToCamelLower));
 
+        // 第2行：优先级（跳过）
+        if (!csv.Read())
+        {
+            Console.WriteLine($"[Warn] CSV {filePath} 缺少优先级行");
+            return;
+        }
+        // 第3行：类型（跳过）
         if (!csv.Read())
         {
             Console.WriteLine($"[Warn] CSV {filePath} 缺少类型行");
             return;
         }
 
+        // 数据从第4行开始
         while (csv.Read())
         {
             var rowObj = Activator.CreateInstance(elemType)!;
@@ -516,7 +597,7 @@ public static class ConfGen
             var headerNames = new List<string>();
             var confList = new List<object>();
 
-            bool isHeader = true, skippedTypeRow = false;
+            bool isHeader = true, prioritySkipped = false, typeSkipped = false;
 
             while (reader.Read())
             {
@@ -528,11 +609,8 @@ public static class ConfGen
                     continue;
                 }
 
-                if (!skippedTypeRow)
-                {
-                    skippedTypeRow = true;
-                    continue;
-                }
+                if (!prioritySkipped) { prioritySkipped = true; continue; } // 第2行：优先级
+                if (!typeSkipped)     { typeSkipped = true;     continue; } // 第3行：类型
 
                 var rowObj = Activator.CreateInstance(elemType)!;
                 for (int i = 0; i < subFields.Length; i++)
@@ -631,6 +709,7 @@ public static class ConfGen
         public string FilePath  = "";
         public string classDef  = "";
         public List<GenCodeProp> props = new();
+        public List<int?> keyPriorities = new(); // ★ 第二行优先级（null=不参与；1/2/3…）
     }
 
     public class GenCodeContent { public List<ClassContent> classes = new(); }
@@ -665,5 +744,64 @@ public static class ConfGen
             }
             return sb.ToString();
         }
+    }
+
+    // ====== 生成器内部使用的小工具 ======
+
+    private static List<int?> ParsePriorityRow(int count, Func<int, string?> getter)
+    {
+        var pri = new List<int?>(count);
+        for (int i = 0; i < count; i++)
+        {
+            var cell = getter(i);
+            if (string.IsNullOrWhiteSpace(cell)) { pri.Add(null); continue; }
+            if (int.TryParse(cell.Trim(), out int p) && p > 0) pri.Add(p);
+            else pri.Add(null);
+        }
+        return pri;
+    }
+
+    private static List<string> ExtractKeyChain(ClassContent c)
+    {
+        var result = new List<string>();
+        if (c.keyPriorities == null || c.keyPriorities.Count == 0) return result;
+
+        var pairs = c.props.Zip(c.keyPriorities, (p, pr) => (p.name, pr))
+                           .Where(t => t.pr.HasValue && t.pr.Value > 0)
+                           .OrderBy(t => t.pr!.Value)
+                           .ToList();
+
+        foreach (var (name, _) in pairs) result.Add(name);
+        return result;
+    }
+
+    // 声明：public Dictionary<K1, Dictionary<K2, ... , T>> {ClassName}Ct { get; private set; }
+    private static string EmitIndexFieldDeclCt(string className, List<GenCodeProp> props, List<string> keys)
+    {
+        string KeyType(int i) => props.First(p => p.name == keys[i]).propType;
+        string TailType(int i) => (i == keys.Count - 1)
+            ? className
+            : $"Dictionary<{KeyType(i + 1)}, {TailType(i + 1)}>";
+
+        return $"    public Dictionary<{KeyType(0)}, {TailType(0)}> {className}Ct {{ get; private set; }}";
+    }
+
+    // 赋值：{ClassName}Ct = data.field ...（根据 keys 构造嵌套 GroupBy / ToDictionary）
+    private static string EmitIndexCtorCt(string className, string fieldName, List<GenCodeProp> props, List<string> keys)
+    {
+        if (keys.Count == 1)
+            return $"        {className}Ct = data.{fieldName}.ToDictionary(e => e.{keys[0]}, e => e);";
+
+        var sb = new StringBuilder();
+        sb.Append($"        {className}Ct = data.{fieldName}.GroupBy(e => e.{keys[0]})");
+        for (int i = 0; i < keys.Count - 2; i++)
+        {
+            sb.Append($".ToDictionary(g{i} => g{i}.Key, g{i} => g{i}.GroupBy(e => e.{keys[i + 1]}))");
+            sb.AppendLine();
+            sb.Append(new string(' ', 8));
+        }
+        int last = keys.Count - 2;
+        sb.Append($".ToDictionary(g{last} => g{last}.Key, g{last} => g{last}.ToDictionary(e => e.{keys.Last()}, e => e));");
+        return sb.ToString();
     }
 }

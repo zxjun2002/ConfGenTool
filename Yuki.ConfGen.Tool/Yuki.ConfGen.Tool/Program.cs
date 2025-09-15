@@ -180,7 +180,6 @@ internal sealed record AllOptions(
     }
 }
 
-
 internal sealed record AllLocalOptions(string Input, string OutCs, string OutRacast, string OutBytes, string OutManifest)
 {
     public static AllLocalOptions Parse(string[] args) => new(
