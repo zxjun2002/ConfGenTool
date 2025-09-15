@@ -19,7 +19,7 @@
 
 ## 📦 安装
 
-### 方式一：作为本地 dotnet tool（推荐）
+###作为本地 dotnet tool（推荐）
 
 > 假设你已经在本机 `dotnet pack` 得到 `.nupkg`。
 
