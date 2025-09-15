@@ -107,20 +107,22 @@ public static class ConfGen
         // 1) 最小 csproj（只编 ConfData.cs，引用 MemoryPack）
         var csprojPath = Path.Combine(tempRoot, "ConfDataHost.csproj");
         File.WriteAllText(csprojPath, """
-<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
-    <ImplicitUsings>disable</ImplicitUsings>
-    <Nullable>enable</Nullable>
-  </PropertyGroup>
-  <ItemGroup>
-    <Compile Include="ConfData.cs" />
-  </ItemGroup>
-  <ItemGroup>
-    <PackageReference Include="MemoryPack" Version="1.21.4" />
-  </ItemGroup>
-</Project>
-""", new UTF8Encoding(false));
+                                      <Project Sdk="Microsoft.NET.Sdk">
+                                        <PropertyGroup>
+                                          <TargetFramework>net8.0</TargetFramework>
+                                          <ImplicitUsings>disable</ImplicitUsings>
+                                          <Nullable>enable</Nullable>
+                                          <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+                                        </PropertyGroup>
+                                        <ItemGroup>
+                                          <Compile Include="ConfData.cs" />
+                                        </ItemGroup>
+                                        <ItemGroup>
+                                          <PackageReference Include="MemoryPack" Version="1.21.4" />
+                                        </ItemGroup>
+                                      </Project>
+                                      """, new UTF8Encoding(false));
+
 
         // 2) 复制 ConfData.cs
         File.Copy(confDataCsPath, Path.Combine(tempRoot, "ConfData.cs"), overwrite: true);

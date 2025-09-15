@@ -8,44 +8,38 @@ using System.Collections.Generic;
 [MemoryPackable]
 public partial class ConfData
 {
-    public Item[] item;
-    public TestItem[] testItem;
     public BuffCt[] buffCt;
-    public EffectCt[] effectCt;
-}
-
-[MemoryPackable]
-public partial class Item
-{
-    public int id;
-    public string itemName;
-    public long itemPid;
-    public string itemJson;
-    public int[] itemList;
-    public List<int> itemTestList;
-}
-
-[MemoryPackable]
-public partial class TestItem
-{
-    public int id;
-    public string itemDes;
+    public CategoryRestraint[] categoryRestraint;
+    public SkillsCt[] skillsCt;
 }
 
 [MemoryPackable]
 public partial class BuffCt
 {
     public int buffId;
-    public string buffName;
-    public float buffVal;
-    public int buffLevel;
+    public int buffType;
+    public string buffValue;
+    public bool isUnique;
+    public int buffTime;
 }
 
 [MemoryPackable]
-public partial class EffectCt
+public partial class CategoryRestraint
 {
     public int id;
-    public string effectName;
-    public float effectVal;
+    public int selfCategory;
+    public int enemyCategory;
+    public int effectTyp;
+    public int value;
+}
+
+[MemoryPackable]
+public partial class SkillsCt
+{
+    public int id;
+    public int skillId;
+    public int level;
+    public string skillVale;
+    public int priority;
 }
 

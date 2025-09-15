@@ -2,7 +2,7 @@
 using System.Collections.Generic;
 using System.Linq;
 
-public sealed partial class ItemRacastSet
+public sealed partial class SkillRacastSet
 {
     partial void OnAfterInit()
     {
