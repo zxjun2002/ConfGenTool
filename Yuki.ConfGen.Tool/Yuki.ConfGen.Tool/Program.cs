@@ -39,19 +39,23 @@ internal static class Program
                 case "build":
                 {
                     var o = BuildOptions.Parse(rest);
+
                     if (!string.IsNullOrEmpty(o.ConfData))
                     {
+                        Console.WriteLine($"[build] using ConfData.cs = {Path.GetFullPath(o.ConfData)}");
                         ConfGen.BuildBytesWithTempProject(
-                            inputDir:       o.Input,
-                            outBytesFile:   o.OutBytes,
-                            outManifestFile:o.OutManifest,
-                            confDataCsPath: o.ConfData
+                            inputDir:        o.Input,
+                            outBytesFile:    o.OutBytes,
+                            outManifestFile: o.OutManifest,
+                            confDataCsPath:  o.ConfData
                         );
                     }
                     else
                     {
+                        Console.WriteLine("[build] NO --confdata, using ConfData from loaded assemblies");
                         ConfGen.BuildBinary(o.Input, o.OutBytes, o.OutManifest);
                     }
+
                     Console.WriteLine("Build done.");
                     return 0;
                 }
@@ -120,7 +124,7 @@ internal static class Program
         }
     }
 
-    private const string Usage = 
+    private const string Usage =
 @"Usage:
   yuki-confgen gen        --input <dir> --out-cs <file> --out-racast <dir>
   yuki-confgen build      --input <dir> --out-bytes <file> --out-manifest <file> [--confdata <ConfData.cs>] [--no-manifest]
@@ -151,7 +155,7 @@ internal sealed record BuildOptions(string Input, string OutBytes, string OutMan
         Get(args, "--input"),
         Get(args, "--out-bytes"),
         Get(args, "--out-manifest"),
-        GetOrNull(args, "--confdata") // ✅ 新增：可选
+        GetOrNull(args, "--confdata") // 可选
     );
 
     private static string Get(string[] a, string key)

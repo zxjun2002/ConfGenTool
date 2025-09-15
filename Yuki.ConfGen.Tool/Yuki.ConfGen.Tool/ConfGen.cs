@@ -112,7 +112,7 @@ public static class ConfGen
                                           <TargetFramework>net8.0</TargetFramework>
                                           <ImplicitUsings>disable</ImplicitUsings>
                                           <Nullable>enable</Nullable>
-                                          <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+                                          <EnableDefaultCompileItems>false</EnableDefaultCompileItems> <!-- 关键：关闭隐式 Compile -->
                                         </PropertyGroup>
                                         <ItemGroup>
                                           <Compile Include="ConfData.cs" />
@@ -123,7 +123,6 @@ public static class ConfGen
                                       </Project>
                                       """, new UTF8Encoding(false));
 
-
         // 2) 复制 ConfData.cs
         File.Copy(confDataCsPath, Path.Combine(tempRoot, "ConfData.cs"), overwrite: true);
 
@@ -132,14 +131,14 @@ public static class ConfGen
             $"build \"{csprojPath}\" -c Release -nologo -clp:DisableConsoleColor -p:UseAppHost=false -o \"{outDir}\"")
         {
             UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError  = true
+            RedirectStandardOutput = false,   // 关闭重定向，避免父进程不读导致卡死
+            RedirectStandardError  = false
         };
         using var proc = Process.Start(psi)!;
         proc.WaitForExit();
 
         if (proc.ExitCode != 0)
-            throw new Exception($"Temp build failed (exit {proc.ExitCode}).\n{proc.StandardOutput.ReadToEnd()}\n{proc.StandardError.ReadToEnd()}");
+            throw new Exception($"Temp build failed (exit {proc.ExitCode}).");
 
         // 4) 加载临时 DLL
         var dll = Directory.GetFiles(outDir, "*.dll").FirstOrDefault()
