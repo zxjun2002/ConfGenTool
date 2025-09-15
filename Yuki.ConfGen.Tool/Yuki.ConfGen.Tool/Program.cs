@@ -20,6 +20,10 @@ internal static class Program
 
         try
         {
+            // 可选开关：--no-manifest
+            if (args.Any(a => a.Equals("--no-manifest", StringComparison.OrdinalIgnoreCase)))
+                ConfGen.EmitManifest = false;
+            
             var cmd  = args[0].ToLowerInvariant();
             var rest = args.Skip(1).ToArray();
 

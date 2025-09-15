@@ -15,9 +15,16 @@ using MemoryPack;
 
 public static class ConfGen
 {
+    /// <summary>
+    /// 总开关：是否生成 Manifest（影响 Build 阶段是否写 outManifestFile）
+    /// </summary>
+    public static bool EmitManifest = true;
+
     // ================== 对外入口 ==================
 
-    // Step1: 生成代码 + RacastSet (+ IRacastSet.cs)
+    /// <summary>
+    /// Step1: 生成代码 + RacastSet (+ IRacastSet.cs)。不写 Manifest。
+    /// </summary>
     public static void GenerateCode(string inputDir, string outCodeFile, string outRacastDir)
     {
         var scan = ScanInput(inputDir);
@@ -25,76 +32,70 @@ public static class ConfGen
         Directory.CreateDirectory(Path.GetDirectoryName(outCodeFile)!);
         Directory.CreateDirectory(outRacastDir);
 
-        string tip = "/// <summary>\n/// 此代码为自动生成, 修改无意义, 重新生成会被覆盖\n/// </summary>\n\n";
-        string codeStr = "using MemoryPack;\nusing System.Collections.Generic;\n\n";
+        const string tip = "/// <summary>\n/// 此代码为自动生成, 修改无意义, 重新生成会被覆盖\n/// </summary>\n\n";
+        const string head = "using MemoryPack;\nusing System.Collections.Generic;\n\n";
 
         var sbField = new StringBuilder();
         sbField.AppendLine("[MemoryPackable]");
-        sbField.AppendLine("public partial class ConfData {");
+        sbField.AppendLine("public partial class ConfData");
+        sbField.AppendLine("{");
 
         var sbDef = new StringBuilder();
 
         // 生成每个表的类 & ConfData 字段
         foreach (var it in scan.classes)
         {
-            string classFieldName = char.ToLower(it.className[0]) + it.className.Substring(1);
-            sbField.AppendLine($"    public {it.className}[] {classFieldName};");
+            string fieldName = char.ToLower(it.className[0]) + it.className.Substring(1);
+            sbField.AppendLine($"    public {it.className}[] {fieldName};");
 
             var cs = new StringBuilder();
             cs.AppendLine("[MemoryPackable]");
-            cs.AppendLine($"public partial class {it.className} {{");
+            cs.AppendLine($"public partial class {it.className}");
+            cs.AppendLine("{");
             foreach (var p in it.props)
-            {
                 cs.AppendLine($"    public {p.propType} {p.name};");
-            }
             cs.AppendLine("}");
             cs.AppendLine();
 
             sbDef.Append(cs);
         }
+
         sbField.AppendLine("}");
 
         var final = new StringBuilder();
         final.Append(tip);
-        final.Append(codeStr);
+        final.Append(head);
         final.Append(sbField);
         final.AppendLine();
         final.Append(sbDef);
 
-        File.WriteAllText(outCodeFile, final.ToString(), Encoding.UTF8);
+        File.WriteAllText(outCodeFile, final.ToString(), new UTF8Encoding(false));
 
-        // 生成 RacastSet + IRacastSet
+        // 生成 RacastSet（含 IRacastSet）
         var folderClasses = GroupByFolder(scan);
         EnsureIRacastSet(outRacastDir);
         DoGenRacastSet(folderClasses, outRacastDir);
 
-        // 可选：落一个简易 manifest（方便排查）
-        try
-        {
-            var manifestPathGuess = Path.GetFullPath(
-                Path.Combine(Path.GetDirectoryName(outCodeFile)!, "..", "..", "Output", "ConfManifest.json"));
-            var toSave = new { classes = scan.classes.Select(c => new { c.className, c.FilePath }).ToList() };
-            Directory.CreateDirectory(Path.GetDirectoryName(manifestPathGuess)!);
-            File.WriteAllText(manifestPathGuess,
-                JsonSerializer.Serialize(toSave, new JsonSerializerOptions { WriteIndented = true }),
-                new UTF8Encoding(false));
-        }
-        catch { /* 忽略 */ }
-
         Console.WriteLine("[ConfGen] Code & Racast generated.");
     }
 
-    // Step2（旧入口）：读取表 -> 构造 ConfData -> MemoryPack 序列化（当前 AppDomain 内需能找到 ConfData）
+    /// <summary>
+    /// Step2（旧入口）：当前 AppDomain 已含 ConfData 类型时，直接 build。
+    /// </summary>
     public static void BuildBinary(string inputDir, string outBytesFile, string outManifestFile)
     {
-        var confType =
-            AppDomain.CurrentDomain.GetAssemblies().SelectMany(a => SafeGetTypes(a))
-            .FirstOrDefault(t => t.Name == "ConfData") ?? throw new Exception("ConfData type not found");
+        var confType = AppDomain.CurrentDomain
+            .GetAssemblies()
+            .SelectMany(a => SafeGetTypes(a))
+            .FirstOrDefault(t => t.Name == "ConfData")
+            ?? throw new Exception("ConfData type not found");
 
         BuildBinaryCore(inputDir, outBytesFile, outManifestFile, confType);
     }
 
-    // Step2（新入口）：不依赖业务 csproj。临时最小工程仅编译 ConfData.cs -> 加载 DLL -> 生成 .bytes
+    /// <summary>
+    /// Step2（新入口）：不依赖业务 csproj。用临时最小工程仅编译 ConfData.cs -> 加载 DLL -> 生成 .bytes。
+    /// </summary>
     public static void BuildBytesWithTempProject(string inputDir, string outBytesFile, string outManifestFile, string confDataCsPath)
     {
         if (!File.Exists(confDataCsPath))
@@ -105,7 +106,7 @@ public static class ConfGen
         Directory.CreateDirectory(tempRoot);
         Directory.CreateDirectory(outDir);
 
-        // 1) 最小 csproj（只编 ConfData.cs，引用 MemoryPack 以启用 Source Generator）
+        // 1) 最小 csproj（只编 ConfData.cs，引用 MemoryPack）
         var csprojPath = Path.Combine(tempRoot, "ConfDataHost.csproj");
         File.WriteAllText(csprojPath, """
 <Project Sdk="Microsoft.NET.Sdk">
@@ -126,25 +127,21 @@ public static class ConfGen
         // 2) 复制 ConfData.cs
         File.Copy(confDataCsPath, Path.Combine(tempRoot, "ConfData.cs"), overwrite: true);
 
-        // 3) dotnet build（非常快）
+        // 3) dotnet build
         var psi = new ProcessStartInfo("dotnet",
             $"build \"{csprojPath}\" -c Release -nologo -clp:DisableConsoleColor -p:UseAppHost=false -o \"{outDir}\"")
         {
-            UseShellExecute        = false,
+            UseShellExecute = false,
             RedirectStandardOutput = true,
             RedirectStandardError  = true
         };
-        var p = Process.Start(psi)!;
-        p.WaitForExit();
+        using var proc = Process.Start(psi)!;
+        proc.WaitForExit();
 
-        if (p.ExitCode != 0)
-        {
-            var err = p.StandardError.ReadToEnd();
-            var std = p.StandardOutput.ReadToEnd();
-            throw new Exception($"Temp build failed (exit {p.ExitCode}).\n{std}\n{err}");
-        }
+        if (proc.ExitCode != 0)
+            throw new Exception($"Temp build failed (exit {proc.ExitCode}).\n{proc.StandardOutput.ReadToEnd()}\n{proc.StandardError.ReadToEnd()}");
 
-        // 4) 加载临时 DLL，定位 ConfData 类型
+        // 4) 加载临时 DLL
         var dll = Directory.GetFiles(outDir, "*.dll").FirstOrDefault()
                   ?? throw new FileNotFoundException("No dll produced in temp build folder.", outDir);
 
@@ -159,7 +156,7 @@ public static class ConfGen
     // ============== 核心：读表 → 填充 → 序列化（传入 ConfData 的 Type） ==============
     private static void BuildBinaryCore(string inputDir, string outBytesFile, string outManifestFile, Type confType)
     {
-        var scan = ScanInput(inputDir); // 与代码生成同一套扫描
+        var scan = ScanInput(inputDir);
 
         Directory.CreateDirectory(Path.GetDirectoryName(outBytesFile)!);
         Directory.CreateDirectory(Path.GetDirectoryName(outManifestFile)!);
@@ -172,7 +169,6 @@ public static class ConfGen
         {
             var elemType  = field.FieldType.GetElementType()!;
             var subFields = elemType.GetFields(BindingFlags.Public | BindingFlags.Instance);
-
             string className = char.ToUpper(field.Name[0]) + field.Name.Substring(1);
 
             var cc = scan.classes.FirstOrDefault(c => c.className == className);
@@ -213,10 +209,8 @@ public static class ConfGen
 
         // —— MemoryPack 序列化（兼容不同版本签名）——
         byte[] bytes;
-
         var mpType = typeof(MemoryPackSerializer);
 
-        // 优先找：Serialize(Type type, object? value, MemoryPackSerializerOptions? options = null)
         var nonGeneric = mpType.GetMethods(BindingFlags.Public | BindingFlags.Static)
             .FirstOrDefault(m =>
                 m.Name == "Serialize" && !m.IsGenericMethod &&
@@ -229,27 +223,30 @@ public static class ConfGen
         }
         else
         {
-            // 回退：Serialize<T>(T value [, options])
             var gen = mpType.GetMethods(BindingFlags.Public | BindingFlags.Static)
-                .First(m => m.Name == "Serialize" && m.IsGenericMethodDefinition);
-            var gm = gen.MakeGenericMethod(confType);
-            var ps = gm.GetParameters();
+                            .First(m => m.Name == "Serialize" && m.IsGenericMethodDefinition);
+            var gm  = gen.MakeGenericMethod(confType);
+            var ps  = gm.GetParameters();
             bytes = (byte[])(ps.Length == 1
                 ? gm.Invoke(null, new object?[] { data })!
                 : gm.Invoke(null, new object?[] { data, null })!);
         }
 
         File.WriteAllBytes(outBytesFile, bytes);
-        File.WriteAllText(outManifestFile, $$"""
-        { "timeUtc":"{{DateTime.UtcNow:O}}", "schemaHash":"AUTO", "sheets":[] }
-        """, new UTF8Encoding(false));
+
+        // ✅ 仅当开关开启时写 Manifest
+        if (EmitManifest)
+        {
+            File.WriteAllText(outManifestFile, $$"""
+            { "timeUtc":"{{DateTime.UtcNow:O}}", "schemaHash":"AUTO", "sheets":[] }
+            """, new UTF8Encoding(false));
+        }
     }
 
     // ================= 扫描 & RacastSet 生成 =================
 
     private static GenCodeContent ScanInput(string inputDir)
     {
-        // 支持 .xls
         Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
 
         var result = new GenCodeContent { classes = new List<ClassContent>() };
@@ -419,12 +416,12 @@ public static class ConfGen
             sb.AppendLine($"    public {structName}(ConfData data)");
             sb.AppendLine("    {");
             foreach (var (className, fieldName) in classes)
-                sb.AppendLine($"        {className}Ct = data.{fieldName}.ToDictionary(e => e.id);");
+                sb.AppendLine($"        {className}Ct = data.{fieldName}.ToDictionary(es => es.id);");
             sb.AppendLine("    }");
             sb.AppendLine("}");
 
             var outPath = Path.Combine(outRacastDir, $"{structName}.cs");
-            File.WriteAllText(outPath, sb.ToString(), Encoding.UTF8);
+            File.WriteAllText(outPath, sb.ToString(), new UTF8Encoding(false));
             Console.WriteLine($"[ConfGen] 生成 {structName}.cs");
         }
     }
@@ -591,7 +588,7 @@ public static class ConfGen
     private static int[] ParseIntArray(string value)
     {
         value = value.Trim();
-        if (value.StartsWith("[") && value.EndsWith("]")) value = value[1..^1];
+        if (value.StartsWith('[') && value.EndsWith(']')) value = value[1..^1];
         return value.Split(',', StringSplitOptions.RemoveEmptyEntries)
                     .Select(s => int.TryParse(s.Trim(), out var v) ? v : 0).ToArray();
     }
@@ -599,22 +596,22 @@ public static class ConfGen
     private static List<int> ParseIntList(string value)
     {
         value = value.Trim();
-        if (value.StartsWith("[") && value.EndsWith("]")) value = value[1..^1];
+        if (value.StartsWith('[') && value.EndsWith(']')) value = value[1..^1];
         return value.Split(',', StringSplitOptions.RemoveEmptyEntries)
                     .Select(s => int.TryParse(s.Trim(), out var v) ? v : 0).ToList();
     }
 
     private static string MapCsvTypeToCSharpType(string csvType) => csvType switch
     {
-        "int" => "int",
-        "string" => "string",
-        "long" => "long",
-        "int[]" => "int[]",
-        "float" => "float",
-        "double" => "double",
-        "bool" => "bool",
+        "int"       => "int",
+        "string"    => "string",
+        "long"      => "long",
+        "int[]"     => "int[]",
+        "float"     => "float",
+        "double"    => "double",
+        "bool"      => "bool",
         "List<int>" => "List<int>",
-        _ => "string",
+        _           => "string",
     };
 
     private static IEnumerable<Type> SafeGetTypes(Assembly asm)
