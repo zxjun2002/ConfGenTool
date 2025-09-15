@@ -1,20 +1,23 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.Loader;
 using System.Text;
 using System.Text.Json;
 using CsvHelper;
 using CsvHelper.Configuration;
 using ExcelDataReader;
+using MemoryPack;
 
 public static class ConfGen
 {
-    // =============== 对外两个入口 =================
+    // ================== 对外入口 ==================
 
-    // Step1: 生成代码 + RacastSet
+    // Step1: 生成代码 + RacastSet (+ IRacastSet.cs)
     public static void GenerateCode(string inputDir, string outCodeFile, string outRacastDir)
     {
         var scan = ScanInput(inputDir);
@@ -60,34 +63,106 @@ public static class ConfGen
 
         File.WriteAllText(outCodeFile, final.ToString(), Encoding.UTF8);
 
-        // 生成 RacastSet
+        // 生成 RacastSet + IRacastSet
         var folderClasses = GroupByFolder(scan);
+        EnsureIRacastSet(outRacastDir);
         DoGenRacastSet(folderClasses, outRacastDir);
 
-        // 可选：把扫描结果也保存成 manifest（供调试/排查）
-        // 这里只保存 className 和 filePath，够用
+        // 可选：落一个简易 manifest（方便排查）
         try
         {
-            var manifestPathGuess = Path.Combine(Path.GetDirectoryName(outCodeFile)!, "..", "..", "Output", "ConfManifest.json");
+            var manifestPathGuess = Path.GetFullPath(
+                Path.Combine(Path.GetDirectoryName(outCodeFile)!, "..", "..", "Output", "ConfManifest.json"));
             var toSave = new { classes = scan.classes.Select(c => new { c.className, c.FilePath }).ToList() };
-            Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(manifestPathGuess))!);
-            File.WriteAllText(manifestPathGuess, JsonSerializer.Serialize(toSave, new JsonSerializerOptions { WriteIndented = true }));
+            Directory.CreateDirectory(Path.GetDirectoryName(manifestPathGuess)!);
+            File.WriteAllText(manifestPathGuess,
+                JsonSerializer.Serialize(toSave, new JsonSerializerOptions { WriteIndented = true }),
+                new UTF8Encoding(false));
         }
         catch { /* 忽略 */ }
 
         Console.WriteLine("[ConfGen] Code & Racast generated.");
     }
 
-    // Step2: 读取表 -> 构造 ConfData -> MemoryPack 序列化
+    // Step2（旧入口）：读取表 -> 构造 ConfData -> MemoryPack 序列化（当前 AppDomain 内需能找到 ConfData）
     public static void BuildBinary(string inputDir, string outBytesFile, string outManifestFile)
     {
-        var scan = ScanInput(inputDir); // 和生成代码同样的扫描逻辑
+        var confType =
+            AppDomain.CurrentDomain.GetAssemblies().SelectMany(a => SafeGetTypes(a))
+            .FirstOrDefault(t => t.Name == "ConfData") ?? throw new Exception("ConfData type not found");
+
+        BuildBinaryCore(inputDir, outBytesFile, outManifestFile, confType);
+    }
+
+    // Step2（新入口）：不依赖业务 csproj。临时最小工程仅编译 ConfData.cs -> 加载 DLL -> 生成 .bytes
+    public static void BuildBytesWithTempProject(string inputDir, string outBytesFile, string outManifestFile, string confDataCsPath)
+    {
+        if (!File.Exists(confDataCsPath))
+            throw new FileNotFoundException("ConfData.cs not found", confDataCsPath);
+
+        var tempRoot = Path.Combine(Path.GetTempPath(), "yuki-confgen", Guid.NewGuid().ToString("N"));
+        var outDir   = Path.Combine(tempRoot, "out");
+        Directory.CreateDirectory(tempRoot);
+        Directory.CreateDirectory(outDir);
+
+        // 1) 最小 csproj（只编 ConfData.cs，引用 MemoryPack 以启用 Source Generator）
+        var csprojPath = Path.Combine(tempRoot, "ConfDataHost.csproj");
+        File.WriteAllText(csprojPath, """
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="ConfData.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="MemoryPack" Version="1.21.4" />
+  </ItemGroup>
+</Project>
+""", new UTF8Encoding(false));
+
+        // 2) 复制 ConfData.cs
+        File.Copy(confDataCsPath, Path.Combine(tempRoot, "ConfData.cs"), overwrite: true);
+
+        // 3) dotnet build（非常快）
+        var psi = new ProcessStartInfo("dotnet",
+            $"build \"{csprojPath}\" -c Release -nologo -clp:DisableConsoleColor -p:UseAppHost=false -o \"{outDir}\"")
+        {
+            UseShellExecute        = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError  = true
+        };
+        var p = Process.Start(psi)!;
+        p.WaitForExit();
+
+        if (p.ExitCode != 0)
+        {
+            var err = p.StandardError.ReadToEnd();
+            var std = p.StandardOutput.ReadToEnd();
+            throw new Exception($"Temp build failed (exit {p.ExitCode}).\n{std}\n{err}");
+        }
+
+        // 4) 加载临时 DLL，定位 ConfData 类型
+        var dll = Directory.GetFiles(outDir, "*.dll").FirstOrDefault()
+                  ?? throw new FileNotFoundException("No dll produced in temp build folder.", outDir);
+
+        var asm = AssemblyLoadContext.Default.LoadFromAssemblyPath(dll);
+        var confType = SafeGetTypes(asm).FirstOrDefault(t => t.Name == "ConfData")
+                       ?? throw new Exception("ConfData type not found in temp assembly");
+
+        // 5) 复用核心逻辑
+        BuildBinaryCore(inputDir, outBytesFile, outManifestFile, confType);
+    }
+
+    // ============== 核心：读表 → 填充 → 序列化（传入 ConfData 的 Type） ==============
+    private static void BuildBinaryCore(string inputDir, string outBytesFile, string outManifestFile, Type confType)
+    {
+        var scan = ScanInput(inputDir); // 与代码生成同一套扫描
 
         Directory.CreateDirectory(Path.GetDirectoryName(outBytesFile)!);
         Directory.CreateDirectory(Path.GetDirectoryName(outManifestFile)!);
-
-        var confType = FindType("ConfData")
-            ?? throw new Exception("ConfData type not found. 先执行 all/gen 让项目编译并加载模型 DLL。");
 
         var data = Activator.CreateInstance(confType)!;
 
@@ -95,7 +170,7 @@ public static class ConfGen
         var fields = confType.GetFields(BindingFlags.Public | BindingFlags.Instance);
         foreach (var field in fields)
         {
-            Type elemType = field.FieldType.GetElementType()!;
+            var elemType  = field.FieldType.GetElementType()!;
             var subFields = elemType.GetFields(BindingFlags.Public | BindingFlags.Instance);
 
             string className = char.ToUpper(field.Name[0]) + field.Name.Substring(1);
@@ -111,17 +186,17 @@ public static class ConfGen
             try
             {
                 var headerNames = new List<string>();
-                var confList = new List<object>();
+                var confList    = new List<object>();
 
                 if (filePath.EndsWith(".csv", StringComparison.OrdinalIgnoreCase))
                 {
                     ReadCsvFile(filePath, elemType, subFields, headerNames, confList);
                     var arr = Array.CreateInstance(elemType, confList.Count);
-                    confList.ToArray().CopyTo(arr, 0);
+                    for (int i = 0; i < confList.Count; i++) arr.SetValue(confList[i], i);
                     field.SetValue(data, arr);
                 }
                 else if (filePath.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase) ||
-                         filePath.EndsWith(".xls", StringComparison.OrdinalIgnoreCase))
+                         filePath.EndsWith(".xls",  StringComparison.OrdinalIgnoreCase))
                 {
                     ReadExcelFile(filePath, scan, elemType, subFields, data, className, confType);
                 }
@@ -139,9 +214,9 @@ public static class ConfGen
         // —— MemoryPack 序列化（兼容不同版本签名）——
         byte[] bytes;
 
-        var mpType = typeof(MemoryPack.MemoryPackSerializer);
+        var mpType = typeof(MemoryPackSerializer);
 
-        // 1) 优先找非泛型：Serialize(Type type, object? value, MemoryPackSerializerOptions? options = null)
+        // 优先找：Serialize(Type type, object? value, MemoryPackSerializerOptions? options = null)
         var nonGeneric = mpType.GetMethods(BindingFlags.Public | BindingFlags.Static)
             .FirstOrDefault(m =>
                 m.Name == "Serialize" && !m.IsGenericMethod &&
@@ -150,30 +225,31 @@ public static class ConfGen
 
         if (nonGeneric != null)
         {
-            bytes = (byte[])nonGeneric.Invoke(null, new object[] { confType, data, null })!;
+            bytes = (byte[])nonGeneric.Invoke(null, new object?[] { confType, data, null })!;
         }
         else
         {
-            // 2) 回退到泛型 Serialize<T>(T value [ , options? ])
+            // 回退：Serialize<T>(T value [, options])
             var gen = mpType.GetMethods(BindingFlags.Public | BindingFlags.Static)
                 .First(m => m.Name == "Serialize" && m.IsGenericMethodDefinition);
-
             var gm = gen.MakeGenericMethod(confType);
             var ps = gm.GetParameters();
-
-            if (ps.Length == 1)
-                bytes = (byte[])gm.Invoke(null, new object?[] { data })!;
-            else
-                bytes = (byte[])gm.Invoke(null, new object?[] { data, null })!;
+            bytes = (byte[])(ps.Length == 1
+                ? gm.Invoke(null, new object?[] { data })!
+                : gm.Invoke(null, new object?[] { data, null })!);
         }
 
         File.WriteAllBytes(outBytesFile, bytes);
+        File.WriteAllText(outManifestFile, $$"""
+        { "timeUtc":"{{DateTime.UtcNow:O}}", "schemaHash":"AUTO", "sheets":[] }
+        """, new UTF8Encoding(false));
     }
 
-    // =============== 扫描 & 生成 RacastSet =================
+    // ================= 扫描 & RacastSet 生成 =================
+
     private static GenCodeContent ScanInput(string inputDir)
     {
-        // 注册 .xls 代码页（外部 Program 也做了，这里兜底）
+        // 支持 .xls
         Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
 
         var result = new GenCodeContent { classes = new List<ClassContent>() };
@@ -238,7 +314,7 @@ public static class ConfGen
                 className = className,
                 fileName  = className,
                 FilePath  = file,
-                classDef  = "", // 代码生成时再拼
+                classDef  = "",
                 props     = props,
             });
         }
@@ -353,7 +429,18 @@ public static class ConfGen
         }
     }
 
-    // =============== 读取 CSV / Excel & 类型转换 ===============
+    private static void EnsureIRacastSet(string outRacastDir)
+    {
+        var path = Path.Combine(outRacastDir, "IRacastSet.cs");
+        const string content = "public interface IRacastSet { }";
+        if (!File.Exists(path))
+        {
+            File.WriteAllText(path, content, new UTF8Encoding(false));
+            Console.WriteLine("[ConfGen] 生成 IRacastSet.cs");
+        }
+    }
+
+    // ================= 读取 CSV / Excel & 类型转换 =================
 
     private static void ReadCsvFile(string filePath, Type elemType, FieldInfo[] subFields,
         List<string> headerNames, List<object> confList)
@@ -472,7 +559,7 @@ public static class ConfGen
             }
 
             var arr = Array.CreateInstance(elemType, confList.Count);
-            confList.ToArray().CopyTo(arr, 0);
+            for (int i = 0; i < confList.Count; i++) arr.SetValue(confList[i], i);
             field.SetValue(data, arr);
 
         } while (reader.NextResult());
@@ -484,13 +571,13 @@ public static class ConfGen
 
         try
         {
-            if (targetType == typeof(int))    return int.TryParse(value, out var v) ? v : 0;
-            if (targetType == typeof(long))   return long.TryParse(value, out var v) ? v : 0L;
-            if (targetType == typeof(float))  return float.TryParse(value, out var v) ? v : 0f;
-            if (targetType == typeof(double)) return double.TryParse(value, out var v) ? v : 0d;
-            if (targetType == typeof(bool))   return bool.TryParse(value, out var v) ? v : false;
-            if (targetType == typeof(int[]))      return ParseIntArray(value);
-            if (targetType == typeof(List<int>))  return ParseIntList(value);
+            if (targetType == typeof(int))       return int.TryParse(value, out var v) ? v : 0;
+            if (targetType == typeof(long))      return long.TryParse(value, out var v) ? v : 0L;
+            if (targetType == typeof(float))     return float.TryParse(value, out var v) ? v : 0f;
+            if (targetType == typeof(double))    return double.TryParse(value, out var v) ? v : 0d;
+            if (targetType == typeof(bool))      return bool.TryParse(value, out var v) ? v : false;
+            if (targetType == typeof(int[]))     return ParseIntArray(value);
+            if (targetType == typeof(List<int>)) return ParseIntList(value);
         }
         catch (Exception ex)
         {
@@ -530,66 +617,56 @@ public static class ConfGen
         _ => "string",
     };
 
-    private static Type? FindType(string typeName)
+    private static IEnumerable<Type> SafeGetTypes(Assembly asm)
     {
-        foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
-        {
-            Type? t = null;
-            try { t = asm.GetType(typeName, throwOnError: false, ignoreCase: false); }
-            catch { }
-            if (t != null) return t;
-
-            try { t = asm.GetTypes().FirstOrDefault(x => x.Name == typeName); }
-            catch { t = null; }
-            if (t != null) return t;
-        }
-        return null;
-    }
-}
-
-// =============== 下面是你原有的小模型/工具类（改为纯 .NET） ===============
-
-public class GenCodeProp { public string name; public string propType; }
-
-public class ClassContent
-{
-    public string className;
-    public string fileName;
-    public string FilePath;
-    public string classDef;
-    public List<GenCodeProp> props;
-}
-
-public class GenCodeContent { public List<ClassContent> classes; }
-
-public static class ReadConfEditorUtil
-{
-    public static string ToCamelUpper(string str)
-    {
-        var parts = str.Split('_', StringSplitOptions.RemoveEmptyEntries);
-        var sb = new StringBuilder();
-        foreach (var p in parts)
-        {
-            if (p.Length == 0) continue;
-            sb.Append(char.ToUpper(p[0]));
-            if (p.Length > 1) sb.Append(p.Substring(1));
-        }
-        return sb.ToString();
+        try { return asm.GetTypes(); }
+        catch { return Array.Empty<Type>(); }
     }
 
-    public static string ToCamelLower(string str)
+    // =================== 模型 types ===================
+
+    public class GenCodeProp { public string name = ""; public string propType = "string"; }
+
+    public class ClassContent
     {
-        var parts = str.Split('_', StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length == 0) return str;
-        var sb = new StringBuilder();
-        sb.Append(parts[0]);
-        for (int i = 1; i < parts.Length; i++)
+        public string className = "";
+        public string fileName  = "";
+        public string FilePath  = "";
+        public string classDef  = "";
+        public List<GenCodeProp> props = new();
+    }
+
+    public class GenCodeContent { public List<ClassContent> classes = new(); }
+
+    public static class ReadConfEditorUtil
+    {
+        public static string ToCamelUpper(string str)
         {
-            var p = parts[i];
-            if (p.Length == 0) continue;
-            sb.Append(char.ToUpper(p[0]));
-            if (p.Length > 1) sb.Append(p.Substring(1));
+            var parts = str.Split('_', StringSplitOptions.RemoveEmptyEntries);
+            var sb = new StringBuilder();
+            foreach (var p in parts)
+            {
+                if (p.Length == 0) continue;
+                sb.Append(char.ToUpper(p[0]));
+                if (p.Length > 1) sb.Append(p.Substring(1));
+            }
+            return sb.ToString();
         }
-        return sb.ToString();
+
+        public static string ToCamelLower(string str)
+        {
+            var parts = str.Split('_', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 0) return str;
+            var sb = new StringBuilder();
+            sb.Append(parts[0]);
+            for (int i = 1; i < parts.Length; i++)
+            {
+                var p = parts[i];
+                if (p.Length == 0) continue;
+                sb.Append(char.ToUpper(p[0]));
+                if (p.Length > 1) sb.Append(p.Substring(1));
+            }
+            return sb.ToString();
+        }
     }
 }

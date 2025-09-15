@@ -1,17 +1,17 @@
 {
   "format": 1,
   "restore": {
-    "D:\\project\\Yuki.ConfGen.Tool\\Yuki.ConfGen.Tool\\Yuki.ConfGen.Tool.csproj": {}
+    "D:\\project\\ConfGenTool\\Yuki.ConfGen.Tool\\Yuki.ConfGen.Tool\\Yuki.ConfGen.Tool.csproj": {}
   },
   "projects": {
-    "D:\\project\\Yuki.ConfGen.Tool\\Yuki.ConfGen.Tool\\Yuki.ConfGen.Tool.csproj": {
-      "version": "1.0.0",
+    "D:\\project\\ConfGenTool\\Yuki.ConfGen.Tool\\Yuki.ConfGen.Tool\\Yuki.ConfGen.Tool.csproj": {
+      "version": "1.0.1",
       "restore": {
-        "projectUniqueName": "D:\\project\\Yuki.ConfGen.Tool\\Yuki.ConfGen.Tool\\Yuki.ConfGen.Tool.csproj",
-        "projectName": "Yuki.ConfGen.Tool",
-        "projectPath": "D:\\project\\Yuki.ConfGen.Tool\\Yuki.ConfGen.Tool\\Yuki.ConfGen.Tool.csproj",
+        "projectUniqueName": "D:\\project\\ConfGenTool\\Yuki.ConfGen.Tool\\Yuki.ConfGen.Tool\\Yuki.ConfGen.Tool.csproj",
+        "projectName": "zxjun2002.ConfGen.Tool",
+        "projectPath": "D:\\project\\ConfGenTool\\Yuki.ConfGen.Tool\\Yuki.ConfGen.Tool\\Yuki.ConfGen.Tool.csproj",
         "packagesPath": "C:\\Users\\zhangxujun\\.nuget\\packages\\",
-        "outputPath": "D:\\project\\Yuki.ConfGen.Tool\\Yuki.ConfGen.Tool\\obj\\",
+        "outputPath": "D:\\project\\ConfGenTool\\Yuki.ConfGen.Tool\\Yuki.ConfGen.Tool\\obj\\",
         "projectStyle": "PackageReference",
         "configFilePaths": [
           "C:\\Users\\zhangxujun\\AppData\\Roaming\\NuGet\\NuGet.Config"

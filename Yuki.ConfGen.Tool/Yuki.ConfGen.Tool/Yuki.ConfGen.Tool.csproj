@@ -8,8 +8,8 @@
     <!-- 命令名（运行时敲的命令，建议全小写+短横线） -->
     <ToolCommandName>yuki-confgen</ToolCommandName>
     <!-- 包 ID（安装/卸载/更新都用这个名字） -->
-    <PackageId>Yuki.ConfGen.Tool</PackageId>
-    <Version>1.0.0</Version>
+    <PackageId>zxjun2002.ConfGen.Tool</PackageId>
+    <Version>1.0.1</Version>
     <Authors>Yuki</Authors>
     <Company>Yuki</Company>
     <Description>Config generator (code + .bytes)</Description>

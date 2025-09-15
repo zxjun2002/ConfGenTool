@@ -74,6 +74,24 @@ internal static class Program
                     Console.WriteLine("All done.");
                     return 0;
                 }
+                case "all-local":
+                {
+                    var o = AllLocalOptions.Parse(rest);
+
+                    // 1) 生成代码（ConfData.cs / Racast）
+                    ConfGen.GenerateCode(o.Input, o.OutCs, o.OutRacast);
+
+                    // 2) 本地最小工程编译 ConfData.cs，并生成 bytes（不依赖业务 csproj）
+                    ConfGen.BuildBytesWithTempProject(
+                        inputDir: o.Input,
+                        outBytesFile: o.OutBytes,
+                        outManifestFile: o.OutManifest,
+                        confDataCsPath: o.OutCs
+                    );
+
+                    Console.WriteLine("All-local done.");
+                    return 0;
+                }
                 default:
                     Console.Error.WriteLine(Usage);
                     return 2;
@@ -88,10 +106,10 @@ internal static class Program
 
     private const string Usage =
 @"Usage:
-  yuki-confgen gen   --input <dir> --out-cs <file> --out-racast <dir>
-  yuki-confgen build --input <dir> --out-bytes <file> --out-manifest <file>
-  yuki-confgen all   --input <dir> --out-cs <file> --out-racast <dir> --out-bytes <file> --out-manifest <file> --csproj <path-to-csproj> [--configuration Debug|Release]";
-
+  yuki-confgen gen        --input <dir> --out-cs <file> --out-racast <dir>
+  yuki-confgen build      --input <dir> --out-bytes <file> --out-manifest <file>
+  yuki-confgen all        --input <dir> --out-cs <file> --out-racast <dir> --out-bytes <file> --out-manifest <file> --csproj <path-to-csproj> [--configuration Debug|Release]
+  yuki-confgen all-local  --input <dir> --out-cs <file> --out-racast <dir> --out-bytes <file> --out-manifest <file>";
 }
 
 internal sealed record GenOptions(string Input, string OutCs, string OutRacast)
@@ -155,5 +173,19 @@ internal sealed record AllOptions(
             if (a[i].Equals(key, StringComparison.OrdinalIgnoreCase))
                 return a[i + 1];
         return def;
+    }
+}
+
+
+internal sealed record AllLocalOptions(string Input, string OutCs, string OutRacast, string OutBytes, string OutManifest)
+{
+    public static AllLocalOptions Parse(string[] args) => new(
+        Get(args, "--input"), Get(args, "--out-cs"), Get(args, "--out-racast"),
+        Get(args, "--out-bytes"), Get(args, "--out-manifest"));
+    static string Get(string[] a, string key)
+    {
+        for (int i = 0; i < a.Length - 1; i++)
+            if (a[i].Equals(key, StringComparison.OrdinalIgnoreCase)) return a[i + 1];
+        throw new ArgumentException($"Missing {key}");
     }
 }
