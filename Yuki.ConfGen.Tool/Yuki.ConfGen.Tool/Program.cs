@@ -39,7 +39,19 @@ internal static class Program
                 case "build":
                 {
                     var o = BuildOptions.Parse(rest);
-                    ConfGen.BuildBinary(o.Input, o.OutBytes, o.OutManifest);
+                    if (!string.IsNullOrEmpty(o.ConfData))
+                    {
+                        ConfGen.BuildBytesWithTempProject(
+                            inputDir:       o.Input,
+                            outBytesFile:   o.OutBytes,
+                            outManifestFile:o.OutManifest,
+                            confDataCsPath: o.ConfData
+                        );
+                    }
+                    else
+                    {
+                        ConfGen.BuildBinary(o.Input, o.OutBytes, o.OutManifest);
+                    }
                     Console.WriteLine("Build done.");
                     return 0;
                 }
@@ -108,12 +120,12 @@ internal static class Program
         }
     }
 
-    private const string Usage =
+    private const string Usage = 
 @"Usage:
   yuki-confgen gen        --input <dir> --out-cs <file> --out-racast <dir>
-  yuki-confgen build      --input <dir> --out-bytes <file> --out-manifest <file>
-  yuki-confgen all        --input <dir> --out-cs <file> --out-racast <dir> --out-bytes <file> --out-manifest <file> --csproj <path-to-csproj> [--configuration Debug|Release]
-  yuki-confgen all-local  --input <dir> --out-cs <file> --out-racast <dir> --out-bytes <file> --out-manifest <file>";
+  yuki-confgen build      --input <dir> --out-bytes <file> --out-manifest <file> [--confdata <ConfData.cs>] [--no-manifest]
+  yuki-confgen all        --input <dir> --out-cs <file> --out-racast <dir> --out-bytes <file> --out-manifest <file> --csproj <path-to-csproj> [--configuration Debug|Release] [--no-manifest]
+  yuki-confgen all-local  --input <dir> --out-cs <file> --out-racast <dir> --out-bytes <file> --out-manifest <file> [--no-manifest]";
 }
 
 internal sealed record GenOptions(string Input, string OutCs, string OutRacast)
@@ -133,12 +145,13 @@ internal sealed record GenOptions(string Input, string OutCs, string OutRacast)
     }
 }
 
-internal sealed record BuildOptions(string Input, string OutBytes, string OutManifest)
+internal sealed record BuildOptions(string Input, string OutBytes, string OutManifest, string? ConfData)
 {
     public static BuildOptions Parse(string[] args) => new(
         Get(args, "--input"),
         Get(args, "--out-bytes"),
-        Get(args, "--out-manifest")
+        Get(args, "--out-manifest"),
+        GetOrNull(args, "--confdata") // ✅ 新增：可选
     );
 
     private static string Get(string[] a, string key)
@@ -147,6 +160,14 @@ internal sealed record BuildOptions(string Input, string OutBytes, string OutMan
             if (a[i].Equals(key, StringComparison.OrdinalIgnoreCase))
                 return a[i + 1];
         throw new ArgumentException($"Missing {key}");
+    }
+
+    private static string? GetOrNull(string[] a, string key)
+    {
+        for (int i = 0; i < a.Length - 1; i++)
+            if (a[i].Equals(key, StringComparison.OrdinalIgnoreCase))
+                return a[i + 1];
+        return null;
     }
 }
 
