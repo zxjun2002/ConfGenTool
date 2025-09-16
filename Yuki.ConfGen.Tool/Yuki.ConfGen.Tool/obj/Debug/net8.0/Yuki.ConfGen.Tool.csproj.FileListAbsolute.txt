@@ -90,3 +90,11 @@ C:\Users\zhangxujun\AppData\Local\Temp\yuki-confgen\7d25f1c13d854785a92f8a2925fc
 C:\Users\zhangxujun\AppData\Local\Temp\yuki-confgen\7d25f1c13d854785a92f8a2925fc3127\Yuki.ConfGen.Tool.runtimeconfig.json
 C:\Users\zhangxujun\AppData\Local\Temp\yuki-confgen\7d25f1c13d854785a92f8a2925fc3127\Yuki.ConfGen.Tool.dll
 C:\Users\zhangxujun\AppData\Local\Temp\yuki-confgen\7d25f1c13d854785a92f8a2925fc3127\Yuki.ConfGen.Tool.pdb
+C:\Users\zhangxujun\AppData\Local\Temp\yuki-confgen\21eb5b05d626422b880711e97939b827\Yuki.ConfGen.Tool.deps.json
+C:\Users\zhangxujun\AppData\Local\Temp\yuki-confgen\21eb5b05d626422b880711e97939b827\Yuki.ConfGen.Tool.runtimeconfig.json
+C:\Users\zhangxujun\AppData\Local\Temp\yuki-confgen\21eb5b05d626422b880711e97939b827\Yuki.ConfGen.Tool.dll
+C:\Users\zhangxujun\AppData\Local\Temp\yuki-confgen\21eb5b05d626422b880711e97939b827\Yuki.ConfGen.Tool.pdb
+C:\Users\zhangxujun\AppData\Local\Temp\yuki-confgen\f44ff5b7c11c4a7c89229a13b9a18afb\Yuki.ConfGen.Tool.deps.json
+C:\Users\zhangxujun\AppData\Local\Temp\yuki-confgen\f44ff5b7c11c4a7c89229a13b9a18afb\Yuki.ConfGen.Tool.runtimeconfig.json
+C:\Users\zhangxujun\AppData\Local\Temp\yuki-confgen\f44ff5b7c11c4a7c89229a13b9a18afb\Yuki.ConfGen.Tool.dll
+C:\Users\zhangxujun\AppData\Local\Temp\yuki-confgen\f44ff5b7c11c4a7c89229a13b9a18afb\Yuki.ConfGen.Tool.pdb

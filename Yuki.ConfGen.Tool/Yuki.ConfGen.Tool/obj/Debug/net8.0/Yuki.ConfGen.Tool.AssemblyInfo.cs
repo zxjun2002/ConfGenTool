@@ -14,7 +14,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyDescriptionAttribute("Config generator (code + .bytes)")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.6.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.6+2e57418800270d2f6cbff564ee5287b66db72218")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.6+37d4bce56ee50995ca5d7105f9fada1946af1eff")]
 [assembly: System.Reflection.AssemblyProductAttribute("Yuki.ConfGen.Tool")]
 [assembly: System.Reflection.AssemblyTitleAttribute("Yuki.ConfGen.Tool")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.6.0")]
