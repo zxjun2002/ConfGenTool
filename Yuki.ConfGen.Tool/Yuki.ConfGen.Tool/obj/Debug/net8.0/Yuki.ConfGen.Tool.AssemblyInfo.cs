@@ -13,11 +13,11 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("Yuki")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyDescriptionAttribute("Config generator (code + .bytes)")]
-[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.6.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.6+37d4bce56ee50995ca5d7105f9fada1946af1eff")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.7.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.7+990d4bb898666fff5ca7d7796abaeee1acd2df0b")]
 [assembly: System.Reflection.AssemblyProductAttribute("Yuki.ConfGen.Tool")]
 [assembly: System.Reflection.AssemblyTitleAttribute("Yuki.ConfGen.Tool")]
-[assembly: System.Reflection.AssemblyVersionAttribute("1.0.6.0")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.7.0")]
 
 // 由 MSBuild WriteCodeFragment 类生成。
 

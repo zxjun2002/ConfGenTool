@@ -1,9 +1,11 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Linq.Expressions;
 using System.Reflection;
 using System.Runtime.Loader;
 using System.Text;
@@ -14,16 +16,17 @@ using MemoryPack;
 
 public static class ConfGen
 {
-    /// <summary>
-    /// 总开关：是否生成 Manifest（影响 Build 阶段是否写 outManifestFile）
-    /// </summary>
+    /// <summary>是否生成 Manifest（受 --no-manifest 影响）</summary>
     public static bool EmitManifest = true;
+    /// <summary>详细日志（--verbose 开启）。默认 false：仅错误。</summary>
+    public static bool Verbose = false;
+
+    private static void Log(string msg)  { if (Verbose) Console.WriteLine(msg); }
+    private static void Warn(string msg) { if (Verbose) Console.WriteLine(msg); }
+    private static void Err(string msg)  => Console.Error.WriteLine(msg);
 
     // ================== 对外入口 ==================
 
-    /// <summary>
-    /// Step1: 生成代码 + RacastSet (+ IRacastSet.cs)。不写 Manifest。
-    /// </summary>
     public static void GenerateCode(string inputDir, string outCodeFile, string outRacastDir)
     {
         var scan = ScanInput(inputDir);
@@ -41,7 +44,6 @@ public static class ConfGen
 
         var sbDef = new StringBuilder();
 
-        // 生成每个表的类 & ConfData 字段
         foreach (var it in scan.classes)
         {
             string fieldName = char.ToLower(it.className[0]) + it.className.Substring(1);
@@ -69,31 +71,27 @@ public static class ConfGen
 
         File.WriteAllText(outCodeFile, final.ToString(), new UTF8Encoding(false));
 
-        // 生成 RacastSet（含 IRacastSet）
+        Log($"[ConfGen] ConfData  -> {Path.GetFullPath(outCodeFile)}");
+        Log($"[ConfGen] Tables({scan.classes.Count}): {string.Join(", ", scan.classes.Select(c => c.className))}");
+
         var folderClasses = GroupByFolder(scan);
         EnsureIRacastSet(outRacastDir);
         DoGenRacastSet(folderClasses, outRacastDir, scan);
 
-        Console.WriteLine("[ConfGen] Code & Racast generated.");
+        Log("[ConfGen] Code & Racast generated.");
     }
 
-    /// <summary>
-    /// Step2（旧入口）：当前 AppDomain 已含 ConfData 类型时，直接 build。
-    /// </summary>
     public static void BuildBinary(string inputDir, string outBytesFile, string outManifestFile)
     {
         var confType = AppDomain.CurrentDomain
             .GetAssemblies()
-            .SelectMany(a => SafeGetTypes(a))
+            .SelectMany(SafeGetTypes)
             .FirstOrDefault(t => t.Name == "ConfData")
             ?? throw new Exception("ConfData type not found");
 
         BuildBinaryCore(inputDir, outBytesFile, outManifestFile, confType);
     }
 
-    /// <summary>
-    /// Step2（新入口）：不依赖业务 csproj。用临时最小工程仅编译 ConfData.cs -> 加载 DLL -> 生成 .bytes。
-    /// </summary>
     public static void BuildBytesWithTempProject(string inputDir, string outBytesFile, string outManifestFile, string confDataCsPath)
     {
         if (!File.Exists(confDataCsPath))
@@ -104,43 +102,35 @@ public static class ConfGen
         Directory.CreateDirectory(tempRoot);
         Directory.CreateDirectory(outDir);
 
-        // 1) 最小 csproj（只编 ConfData.cs，引用 MemoryPack）
+        // 最小 csproj（仅编 ConfData.cs，引用 MemoryPack）
         var csprojPath = Path.Combine(tempRoot, "ConfDataHost.csproj");
         File.WriteAllText(csprojPath, """
-                                      <Project Sdk="Microsoft.NET.Sdk">
-                                        <PropertyGroup>
-                                          <TargetFramework>net8.0</TargetFramework>
-                                          <ImplicitUsings>disable</ImplicitUsings>
-                                          <Nullable>enable</Nullable>
-                                          <EnableDefaultCompileItems>false</EnableDefaultCompileItems> <!-- 关键：关闭隐式 Compile -->
-                                        </PropertyGroup>
-                                        <ItemGroup>
-                                          <Compile Include="ConfData.cs" />
-                                        </ItemGroup>
-                                        <ItemGroup>
-                                          <PackageReference Include="MemoryPack" Version="1.21.4" />
-                                        </ItemGroup>
-                                      </Project>
-                                      """, new UTF8Encoding(false));
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="ConfData.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="MemoryPack" Version="1.21.4" />
+  </ItemGroup>
+</Project>
+""", new UTF8Encoding(false));
 
-        // 2) 复制 ConfData.cs
         File.Copy(confDataCsPath, Path.Combine(tempRoot, "ConfData.cs"), overwrite: true);
 
-        // 3) dotnet build
+        // 仅错误（抑制警告/普通输出）
         var psi = new ProcessStartInfo("dotnet",
-            $"build \"{csprojPath}\" -c Release -nologo -clp:DisableConsoleColor -p:UseAppHost=false -o \"{outDir}\"")
-        {
-            UseShellExecute = false,
-            RedirectStandardOutput = false,   // 关闭重定向，避免父进程不读导致卡死
-            RedirectStandardError  = false
-        };
+            $"build \"{csprojPath}\" -c Release -nologo -clp:ErrorsOnly -p:UseAppHost=false -o \"{outDir}\"")
+        { UseShellExecute = false };
         using var proc = Process.Start(psi)!;
         proc.WaitForExit();
+        if (proc.ExitCode != 0) throw new Exception($"Temp build failed ({proc.ExitCode})");
 
-        if (proc.ExitCode != 0)
-            throw new Exception($"Temp build failed (exit {proc.ExitCode}).");
-
-        // 4) 加载临时 DLL
         var dll = Directory.GetFiles(outDir, "*.dll").FirstOrDefault()
                   ?? throw new FileNotFoundException("No dll produced in temp build folder.", outDir);
 
@@ -148,11 +138,37 @@ public static class ConfGen
         var confType = SafeGetTypes(asm).FirstOrDefault(t => t.Name == "ConfData")
                        ?? throw new Exception("ConfData type not found in temp assembly");
 
-        // 5) 复用核心逻辑
         BuildBinaryCore(inputDir, outBytesFile, outManifestFile, confType);
     }
 
-    // ============== 核心：读表 → 填充 → 序列化（传入 ConfData 的 Type） ==============
+    public static void BuildWithCsproj(string inputDir, string outBytesFile, string outManifestFile, string csprojPath, string configuration)
+    {
+        if (!File.Exists(csprojPath))
+            throw new FileNotFoundException("csproj not found", csprojPath);
+
+        var tempOut  = Path.Combine(Path.GetTempPath(), "yuki-confgen", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempOut);
+
+        var buildArgs = $"build \"{csprojPath}\" -c {configuration} -o \"{tempOut}\" -p:UseAppHost=false -nologo -clp:ErrorsOnly";
+        Log($"[dotnet {buildArgs}]");
+        using var p = Process.Start(new ProcessStartInfo("dotnet", buildArgs) { UseShellExecute = false })!;
+        p.WaitForExit();
+        if (p.ExitCode != 0) throw new Exception("dotnet build failed");
+
+        var asmPath = Directory.GetFiles(tempOut, "*.dll")
+                               .OrderByDescending(File.GetLastWriteTimeUtc)
+                               .FirstOrDefault()
+                      ?? throw new Exception($"No dll produced in {tempOut}");
+        Log($"[load {asmPath}]");
+        var asm = AssemblyLoadContext.Default.LoadFromAssemblyPath(Path.GetFullPath(asmPath));
+
+        var confType = SafeGetTypes(asm).FirstOrDefault(t => t.Name == "ConfData")
+                       ?? throw new Exception("ConfData type not found in compiled assembly");
+
+        BuildBinaryCore(inputDir, outBytesFile, outManifestFile, confType);
+    }
+
+    // ================= 核心：读表 → 填充 → 序列化 =================
     private static void BuildBinaryCore(string inputDir, string outBytesFile, string outManifestFile, Type confType)
     {
         var scan = ScanInput(inputDir);
@@ -162,7 +178,6 @@ public static class ConfGen
 
         var data = Activator.CreateInstance(confType)!;
 
-        // 逐字段读取
         var fields = confType.GetFields(BindingFlags.Public | BindingFlags.Instance);
         foreach (var field in fields)
         {
@@ -173,7 +188,7 @@ public static class ConfGen
             var cc = scan.classes.FirstOrDefault(c => c.className == className);
             if (cc == null)
             {
-                Console.WriteLine($"[Warn] 未找到 ClassContent: {className}");
+                Warn($"[Warn] ClassContent not found: {className}");
                 continue;
             }
 
@@ -197,53 +212,68 @@ public static class ConfGen
                 }
                 else
                 {
-                    Console.WriteLine($"[Warn] 不支持的文件格式: {filePath}");
+                    Warn($"[Warn] Unsupported file type: {filePath}");
                 }
             }
             catch (Exception e)
             {
-                Console.WriteLine($"[Error] 解析文件 {filePath} 时出错: {e.Message}");
+                Err($"[Error] Parse failed for {filePath}: {e.Message}");
             }
         }
 
-        // —— MemoryPack 序列化（兼容不同版本签名）——
-        byte[] bytes;
-        var mpType = typeof(MemoryPackSerializer);
+        var bytes = MpDyn.Serialize(confType, data);
+        File.WriteAllBytes(outBytesFile, bytes);
 
-        var nonGeneric = mpType.GetMethods(BindingFlags.Public | BindingFlags.Static)
+        if (EmitManifest)
+        {
+            var manifest = $"{{ \"timeUtc\":\"{DateTime.UtcNow:O}\", \"schemaHash\":\"AUTO\", \"sheets\":[] }}";
+            File.WriteAllText(outManifestFile, manifest, new UTF8Encoding(false));
+        }
+    }
+
+    // ================== MemoryPack 动态调用（带缓存） ==================
+    private static class MpDyn
+    {
+        static readonly MethodInfo? NonGenericSerialize =
+            typeof(MemoryPackSerializer)
+            .GetMethods(BindingFlags.Public | BindingFlags.Static)
             .FirstOrDefault(m =>
                 m.Name == "Serialize" && !m.IsGenericMethod &&
                 m.GetParameters().Length >= 2 &&
                 m.GetParameters()[0].ParameterType == typeof(Type));
 
-        if (nonGeneric != null)
+        static readonly MethodInfo? GenericSerializeDef =
+            typeof(MemoryPackSerializer)
+            .GetMethods(BindingFlags.Public | BindingFlags.Static)
+            .FirstOrDefault(m => m.Name == "Serialize" && m.IsGenericMethodDefinition);
+
+        static readonly ConcurrentDictionary<Type, Func<object, byte[]>> Cache = new();
+
+        public static byte[] Serialize(Type t, object value)
         {
-            bytes = (byte[])nonGeneric.Invoke(null, new object?[] { confType, data, null })!;
-        }
-        else
-        {
-            var gen = mpType.GetMethods(BindingFlags.Public | BindingFlags.Static)
-                            .First(m => m.Name == "Serialize" && m.IsGenericMethodDefinition);
-            var gm  = gen.MakeGenericMethod(confType);
-            var ps  = gm.GetParameters();
-            bytes = (byte[])(ps.Length == 1
-                ? gm.Invoke(null, new object?[] { data })!
-                : gm.Invoke(null, new object?[] { data, null })!);
+            if (NonGenericSerialize != null)
+                return (byte[])NonGenericSerialize.Invoke(null, new object?[] { t, value, null })!;
+            var f = Cache.GetOrAdd(t, MakeSerializer);
+            return f(value);
         }
 
-        File.WriteAllBytes(outBytesFile, bytes);
-
-        // ✅ 仅当开关开启时写 Manifest
-        if (EmitManifest)
+        static Func<object, byte[]> MakeSerializer(Type t)
         {
-            File.WriteAllText(outManifestFile, $$"""
-            { "timeUtc":"{{DateTime.UtcNow:O}}", "schemaHash":"AUTO", "sheets":[] }
-            """, new UTF8Encoding(false));
+            if (GenericSerializeDef == null)
+                throw new MissingMethodException("MemoryPackSerializer.Serialize<T> not found.");
+
+            var gm = GenericSerializeDef.MakeGenericMethod(t);
+            var objParam = Expression.Parameter(typeof(object), "obj");
+            var call = Expression.Call(
+                gm,
+                Expression.Convert(objParam, t),
+                Expression.Constant(null, typeof(MemoryPackSerializerOptions))
+            );
+            return Expression.Lambda<Func<object, byte[]>>(call, objParam).Compile();
         }
     }
 
     // ================= 扫描 & RacastSet 生成 =================
-
     private static GenCodeContent ScanInput(string inputDir)
     {
         Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
@@ -273,28 +303,13 @@ public static class ConfGen
             using (var reader = new StreamReader(file))
             using (var csv = new CsvReader(reader, config))
             {
-                // 第1行：列名
-                if (!csv.Read() || !csv.ReadHeader())
-                {
-                    Console.WriteLine($"[Warn] CSV {file} 缺少表头");
-                    continue;
-                }
-                propertyNames = csv.HeaderRecord.ToList();
+                if (!csv.Read() || !csv.ReadHeader()) { Warn($"[Warn] CSV {file} missing header"); continue; }
+                propertyNames = csv.HeaderRecord.Select(ReadConfEditorUtil.ToCamelLower).ToList();
 
-                // 第2行：优先级
-                if (!csv.Read())
-                {
-                    Console.WriteLine($"[Warn] CSV {file} 缺少优先级行");
-                    continue;
-                }
+                if (!csv.Read()) { Warn($"[Warn] CSV {file} missing priority row"); continue; }
                 keyPriorities = ParsePriorityRow(propertyNames.Count, i => csv.GetField(i));
 
-                // 第3行：类型
-                if (!csv.Read())
-                {
-                    Console.WriteLine($"[Warn] CSV {file} 缺少类型行");
-                    continue;
-                }
+                if (!csv.Read()) { Warn($"[Warn] CSV {file} missing type row"); continue; }
                 propertyTypes = new List<string>(propertyNames.Count);
                 for (int i = 0; i < propertyNames.Count; i++)
                     propertyTypes.Add(csv.GetField(i)?.Trim() ?? "string");
@@ -302,18 +317,14 @@ public static class ConfGen
 
             if (propertyNames.Count != propertyTypes.Count)
             {
-                Console.WriteLine($"[Warn] CSV {file} 属性名与类型数量不一致");
+                Warn($"[Warn] CSV {file} header/type count mismatch");
                 continue;
             }
 
             string className = ReadConfEditorUtil.ToCamelUpper(Path.GetFileNameWithoutExtension(file));
             var props = new List<GenCodeProp>();
             for (int i = 0; i < propertyNames.Count; i++)
-            {
-                var propName = ReadConfEditorUtil.ToCamelLower(propertyNames[i]);
-                var propType = MapCsvTypeToCSharpType(propertyTypes[i]);
-                props.Add(new GenCodeProp { name = propName, propType = propType });
-            }
+                props.Add(new GenCodeProp { name = propertyNames[i], propType = MapCsvTypeToCSharpType(propertyTypes[i]) });
 
             result.classes.Add(new ClassContent
             {
@@ -338,7 +349,6 @@ public static class ConfGen
                 var propertyNames = new List<string>();
                 var propertyTypes = new List<string>(); // 第3行
                 var keyPriorities = new List<int?>();   // 第2行
-
                 bool gotHeader = false, gotPriority = false, gotType = false;
 
                 while (reader.Read())
@@ -346,45 +356,33 @@ public static class ConfGen
                     if (!gotHeader)
                     {
                         for (int i = 0; i < reader.FieldCount; i++)
-                            propertyNames.Add(reader.GetString(i)?.Trim() ?? string.Empty);
-                        gotHeader = true;
-                        continue;
+                            propertyNames.Add(ReadConfEditorUtil.ToCamelLower(reader.GetString(i)?.Trim() ?? string.Empty));
+                        gotHeader = true; continue;
                     }
-
                     if (!gotPriority)
                     {
-                        keyPriorities = ParsePriorityRow(
-                            propertyNames.Count,
-                            i => reader.IsDBNull(i) ? "" : reader.GetValue(i)?.ToString()
-                        );
-                        gotPriority = true;
-                        continue;
+                        keyPriorities = ParsePriorityRow(propertyNames.Count, i => reader.IsDBNull(i) ? "" : reader.GetValue(i)?.ToString());
+                        gotPriority = true; continue;
                     }
-
                     if (!gotType)
                     {
                         for (int i = 0; i < reader.FieldCount; i++)
                             propertyTypes.Add(reader.GetString(i)?.Trim() ?? "string");
-                        gotType = true;
-                        break;
+                        gotType = true; break;
                     }
                 }
 
                 if (propertyNames.Count == 0) continue;
                 if (propertyNames.Count != propertyTypes.Count)
                 {
-                    Console.WriteLine($"[Warn] Excel {file}/{sheetName} 属性名与类型数量不一致");
+                    Warn($"[Warn] Excel {file}/{sheetName} header/type count mismatch");
                     continue;
                 }
 
                 string className = ReadConfEditorUtil.ToCamelUpper(sheetName);
                 var props = new List<GenCodeProp>();
                 for (int i = 0; i < propertyNames.Count; i++)
-                {
-                    var propName = ReadConfEditorUtil.ToCamelLower(propertyNames[i]);
-                    var propType = MapCsvTypeToCSharpType(propertyTypes[i]);
-                    props.Add(new GenCodeProp { name = propName, propType = propType });
-                }
+                    props.Add(new GenCodeProp { name = propertyNames[i], propType = MapCsvTypeToCSharpType(propertyTypes[i]) });
 
                 result.classes.Add(new ClassContent
                 {
@@ -409,11 +407,7 @@ public static class ConfGen
         {
             string folder = Path.GetFileName(Path.GetDirectoryName(c.FilePath)) ?? "";
             string field  = char.ToLower(c.className[0]) + c.className[1..];
-            if (!dict.TryGetValue(folder, out var list))
-            {
-                list = new List<(string, string)>();
-                dict[folder] = list;
-            }
+            if (!dict.TryGetValue(folder, out var list)) { list = new(); dict[folder] = list; }
             list.Add((c.className, field));
         }
         return dict;
@@ -426,8 +420,9 @@ public static class ConfGen
     {
         Directory.CreateDirectory(outRacastDir);
 
-        // meta：className -> ClassContent（含优先级）
         var meta = scan.classes.ToDictionary(c => c.className, c => c);
+
+        Log($"[ConfGen] RacastSets: {folderClasses.Count} set(s)");
 
         foreach (var kv in folderClasses)
         {
@@ -435,7 +430,6 @@ public static class ConfGen
             var classes = kv.Value;
             string typeName = $"{folderName}RacastSet";
 
-            // 每个 RacastSet 独立子目录
             string setDir = Path.Combine(outRacastDir, typeName);
             Directory.CreateDirectory(setDir);
 
@@ -445,14 +439,13 @@ public static class ConfGen
             sb.AppendLine();
             sb.AppendLine($"public sealed partial class {typeName} : IRacastSet");
             sb.AppendLine("{");
-            // 字段：仅按优先级链生成，字段名固定 {ClassName}Ct
             foreach (var (className, _) in classes)
             {
                 var c = meta[className];
                 var chain = ExtractKeyChain(c);
                 if (chain.Count == 0)
                 {
-                    sb.AppendLine($"    // {className}: 未配置优先级，未生成索引字段");
+                    sb.AppendLine($"    // {className}: no key priority configured");
                     continue;
                 }
                 sb.AppendLine(EmitIndexFieldDeclCt(className, c.props, chain));
@@ -476,14 +469,21 @@ public static class ConfGen
 
             var autoPath = Path.Combine(setDir, $"{typeName}.cs");
             File.WriteAllText(autoPath, sb.ToString(), new UTF8Encoding(false));
-            Console.WriteLine($"[ConfGen] 生成 {typeName}/{typeName}.cs");
 
-            // 首次生成 Logic 文件（不覆盖）
+            Log($"[ConfGen]  - {typeName} -> {Path.GetFullPath(autoPath)}  (tables: {classes.Count})");
+            foreach (var (className, _) in classes)
+            {
+                var c = meta[className];
+                var chain = ExtractKeyChain(c);
+                string keys = chain.Count == 0 ? "none" : string.Join(" / ", chain);
+                Log($"[ConfGen]      • {className}  keys: {keys}");
+            }
+
             var logicPath = Path.Combine(setDir, $"{typeName}.Logic.cs");
             if (!File.Exists(logicPath))
             {
                 var sbLogic = new StringBuilder();
-                sbLogic.AppendLine("// 自定义扩展：此文件仅首次生成，之后不会被覆盖");
+                sbLogic.AppendLine("// Custom extension: generated once and never overwritten");
                 sbLogic.AppendLine("using System.Collections.Generic;");
                 sbLogic.AppendLine("using System.Linq;");
                 sbLogic.AppendLine();
@@ -491,11 +491,11 @@ public static class ConfGen
                 sbLogic.AppendLine("{");
                 sbLogic.AppendLine("    partial void OnAfterInit()");
                 sbLogic.AppendLine("    {");
-                sbLogic.AppendLine("        // TODO: 在这里构建你的业务索引/缓存");
+                sbLogic.AppendLine("        // TODO: build your additional indices/caches here");
                 sbLogic.AppendLine("    }");
                 sbLogic.AppendLine("}");
                 File.WriteAllText(logicPath, sbLogic.ToString(), new UTF8Encoding(false));
-                Console.WriteLine($"[ConfGen] 创建 {typeName}/{typeName}.Logic.cs");
+                Log($"[ConfGen]      (create once) {Path.GetFullPath(logicPath)}");
             }
         }
     }
@@ -503,16 +503,11 @@ public static class ConfGen
     private static void EnsureIRacastSet(string outRacastDir)
     {
         var path = Path.Combine(outRacastDir, "IRacastSet.cs");
-        const string content = "public interface IRacastSet { }";
         if (!File.Exists(path))
-        {
-            File.WriteAllText(path, content, new UTF8Encoding(false));
-            Console.WriteLine("[ConfGen] 生成 IRacastSet.cs");
-        }
+            File.WriteAllText(path, "public interface IRacastSet { }", new UTF8Encoding(false));
     }
 
     // ================= 读取 CSV / Excel & 类型转换 =================
-
     private static void ReadCsvFile(string filePath, Type elemType, FieldInfo[] subFields,
         List<string> headerNames, List<object> confList)
     {
@@ -528,28 +523,12 @@ public static class ConfGen
         using var reader = new StreamReader(filePath);
         using var csv = new CsvReader(reader, config);
 
-        // 第1行：表头
-        if (!csv.Read() || !csv.ReadHeader())
-        {
-            Console.WriteLine($"[Warn] CSV {filePath} 缺少表头");
-            return;
-        }
+        if (!csv.Read() || !csv.ReadHeader()) { Warn($"[Warn] CSV {filePath} missing header"); return; }
         headerNames.AddRange(csv.HeaderRecord.Select(ReadConfEditorUtil.ToCamelLower));
 
-        // 第2行：优先级（跳过）
-        if (!csv.Read())
-        {
-            Console.WriteLine($"[Warn] CSV {filePath} 缺少优先级行");
-            return;
-        }
-        // 第3行：类型（跳过）
-        if (!csv.Read())
-        {
-            Console.WriteLine($"[Warn] CSV {filePath} 缺少类型行");
-            return;
-        }
+        if (!csv.Read()) { Warn($"[Warn] CSV {filePath} missing priority row"); return; }
+        if (!csv.Read()) { Warn($"[Warn] CSV {filePath} missing type row"); return; }
 
-        // 数据从第4行开始
         while (csv.Read())
         {
             var rowObj = Activator.CreateInstance(elemType)!;
@@ -567,7 +546,7 @@ public static class ConfGen
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"[Error] CSV 解析错误: {ex.Message}");
+                    Err($"[Error] CSV parse error: {ex.Message}");
                 }
             }
             confList.Add(rowObj);
@@ -591,13 +570,12 @@ public static class ConfGen
                 BindingFlags.IgnoreCase | BindingFlags.Public | BindingFlags.Instance);
             if (field == null)
             {
-                Console.WriteLine($"[Warn] ConfData 中未找到字段: {currentClassName}");
+                Warn($"[Warn] ConfData field not found: {currentClassName}");
                 continue;
             }
 
             var headerNames = new List<string>();
             var confList = new List<object>();
-
             bool isHeader = true, prioritySkipped = false, typeSkipped = false;
 
             while (reader.Read())
@@ -606,12 +584,10 @@ public static class ConfGen
                 {
                     for (int i = 0; i < reader.FieldCount; i++)
                         headerNames.Add(ReadConfEditorUtil.ToCamelLower(reader.GetValue(i)?.ToString()?.Trim() ?? string.Empty));
-                    isHeader = false;
-                    continue;
+                    isHeader = false; continue;
                 }
-
-                if (!prioritySkipped) { prioritySkipped = true; continue; } // 第2行：优先级
-                if (!typeSkipped)     { typeSkipped = true;     continue; } // 第3行：类型
+                if (!prioritySkipped) { prioritySkipped = true; continue; }
+                if (!typeSkipped)     { typeSkipped = true;     continue; }
 
                 var rowObj = Activator.CreateInstance(elemType)!;
                 for (int i = 0; i < subFields.Length; i++)
@@ -628,7 +604,7 @@ public static class ConfGen
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine($"[Error] Excel 解析错误: {ex.Message}");
+                        Err($"[Error] Excel parse error: {ex.Message}");
                     }
                 }
                 confList.Add(rowObj);
@@ -657,7 +633,7 @@ public static class ConfGen
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[Error] ConvertValue: {ex.Message}");
+            Err($"[Error] ConvertValue: {ex.Message}");
         }
         return value!;
     }
@@ -699,8 +675,7 @@ public static class ConfGen
         catch { return Array.Empty<Type>(); }
     }
 
-    // =================== 模型 types ===================
-
+    // =================== 模型 ===================
     public class GenCodeProp { public string name = ""; public string propType = "string"; }
 
     public class ClassContent
@@ -710,7 +685,7 @@ public static class ConfGen
         public string FilePath  = "";
         public string classDef  = "";
         public List<GenCodeProp> props = new();
-        public List<int?> keyPriorities = new(); // ★ 第二行优先级（null=不参与；1/2/3…）
+        public List<int?> keyPriorities = new(); // 第二行优先级
     }
 
     public class GenCodeContent { public List<ClassContent> classes = new(); }
@@ -747,8 +722,7 @@ public static class ConfGen
         }
     }
 
-    // ====== 生成器内部使用的小工具 ======
-
+    // ====== RacastSet 生成的字符串工具 ======
     private static List<int?> ParsePriorityRow(int count, Func<int, string?> getter)
     {
         var pri = new List<int?>(count);
@@ -764,30 +738,22 @@ public static class ConfGen
 
     private static List<string> ExtractKeyChain(ClassContent c)
     {
-        var result = new List<string>();
-        if (c.keyPriorities == null || c.keyPriorities.Count == 0) return result;
-
         var pairs = c.props.Zip(c.keyPriorities, (p, pr) => (p.name, pr))
                            .Where(t => t.pr.HasValue && t.pr.Value > 0)
                            .OrderBy(t => t.pr!.Value)
                            .ToList();
-
-        foreach (var (name, _) in pairs) result.Add(name);
-        return result;
+        return pairs.Select(x => x.name).ToList();
     }
 
-    // 声明：public Dictionary<K1, Dictionary<K2, ... , T>> {ClassName}Ct { get; private set; }
     private static string EmitIndexFieldDeclCt(string className, List<GenCodeProp> props, List<string> keys)
     {
         string KeyType(int i) => props.First(p => p.name == keys[i]).propType;
         string TailType(int i) => (i == keys.Count - 1)
             ? className
             : $"Dictionary<{KeyType(i + 1)}, {TailType(i + 1)}>";
-
         return $"    public Dictionary<{KeyType(0)}, {TailType(0)}> {className}Ct {{ get; private set; }}";
     }
 
-    // 赋值：{ClassName}Ct = data.field ...（根据 keys 构造嵌套 GroupBy / ToDictionary）
     private static string EmitIndexCtorCt(string className, string fieldName, List<GenCodeProp> props, List<string> keys)
     {
         if (keys.Count == 1)
@@ -798,8 +764,7 @@ public static class ConfGen
         for (int i = 0; i < keys.Count - 2; i++)
         {
             sb.Append($".ToDictionary(g{i} => g{i}.Key, g{i} => g{i}.GroupBy(e => e.{keys[i + 1]}))");
-            sb.AppendLine();
-            sb.Append(new string(' ', 8));
+            sb.AppendLine().Append(new string(' ', 8));
         }
         int last = keys.Count - 2;
         sb.Append($".ToDictionary(g{last} => g{last}.Key, g{last} => g{last}.ToDictionary(e => e.{keys.Last()}, e => e));");

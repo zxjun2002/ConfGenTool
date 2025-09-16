@@ -1,0 +1,24 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2010/07/nuspec.xsd">
+  <metadata>
+    <id>zxjun2002.ConfGen.Tool</id>
+    <version>1.0.7</version>
+    <authors>Yuki</authors>
+    <description>Config generator (code + .bytes)</description>
+    <packageTypes>
+      <packageType name="DotnetTool" />
+    </packageTypes>
+    <repository type="git" commit="990d4bb898666fff5ca7d7796abaeee1acd2df0b" />
+  </metadata>
+  <files>
+    <file src="D:\project\ConfGenTool\Yuki.ConfGen.Tool\Yuki.ConfGen.Tool\obj\DotnetToolSettings.xml" target="tools\net8.0\any\DotnetToolSettings.xml" />
+    <file src="D:\project\ConfGenTool\Yuki.ConfGen.Tool\Yuki.ConfGen.Tool\bin\Release\net8.0\publish\Yuki.ConfGen.Tool.dll" target="tools\net8.0\any\Yuki.ConfGen.Tool.dll" />
+    <file src="D:\project\ConfGenTool\Yuki.ConfGen.Tool\Yuki.ConfGen.Tool\bin\Release\net8.0\publish\Yuki.ConfGen.Tool.deps.json" target="tools\net8.0\any\Yuki.ConfGen.Tool.deps.json" />
+    <file src="D:\project\ConfGenTool\Yuki.ConfGen.Tool\Yuki.ConfGen.Tool\bin\Release\net8.0\publish\Yuki.ConfGen.Tool.runtimeconfig.json" target="tools\net8.0\any\Yuki.ConfGen.Tool.runtimeconfig.json" />
+    <file src="D:\project\ConfGenTool\Yuki.ConfGen.Tool\Yuki.ConfGen.Tool\bin\Release\net8.0\publish\Yuki.ConfGen.Tool.pdb" target="tools\net8.0\any\Yuki.ConfGen.Tool.pdb" />
+    <file src="D:\project\ConfGenTool\Yuki.ConfGen.Tool\Yuki.ConfGen.Tool\bin\Release\net8.0\publish\CsvHelper.dll" target="tools\net8.0\any\CsvHelper.dll" />
+    <file src="D:\project\ConfGenTool\Yuki.ConfGen.Tool\Yuki.ConfGen.Tool\bin\Release\net8.0\publish\ExcelDataReader.dll" target="tools\net8.0\any\ExcelDataReader.dll" />
+    <file src="D:\project\ConfGenTool\Yuki.ConfGen.Tool\Yuki.ConfGen.Tool\bin\Release\net8.0\publish\ExcelDataReader.DataSet.dll" target="tools\net8.0\any\ExcelDataReader.DataSet.dll" />
+    <file src="D:\project\ConfGenTool\Yuki.ConfGen.Tool\Yuki.ConfGen.Tool\bin\Release\net8.0\publish\MemoryPack.Core.dll" target="tools\net8.0\any\MemoryPack.Core.dll" />
+  </files>
+</package>
