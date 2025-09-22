@@ -4,6 +4,8 @@
 
 > Unity 原版参考：  
 > [yuki-uitest（Gitee）](https://gitee.com/zxjun2002/yuki-uitest)
+> 配套工具：（目前生成设置全面转向json，因此搭配该工具使用）  
+> [schema-studio（Gitee）](https://gitee.com/zxjun2002/schema-studio)
 
 ---
 
