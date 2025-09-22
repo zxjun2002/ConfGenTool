@@ -9,6 +9,7 @@ using System.Linq.Expressions;
 using System.Reflection;
 using System.Runtime.Loader;
 using System.Text;
+using System.Text.Json;
 using CsvHelper;
 using CsvHelper.Configuration;
 using ExcelDataReader;
@@ -27,9 +28,12 @@ public static class ConfGen
 
     // ================== 对外入口 ==================
 
-    public static void GenerateCode(string inputDir, string outCodeFile, string outRacastDir)
+    /// <summary>
+    /// 代码生成：仅读取表的第1行列名；类型/主键/列顺序/侧别全部来自 *.schema.json；按 --side 过滤
+    /// </summary>
+    public static void GenerateCode(string inputDir, string outCodeFile, string outRacastDir, string side = "ALL")
     {
-        var scan = ScanInput(inputDir);
+        var scan = ScanInput(inputDir, side);
 
         Directory.CreateDirectory(Path.GetDirectoryName(outCodeFile)!);
         Directory.CreateDirectory(outRacastDir);
@@ -81,6 +85,9 @@ public static class ConfGen
         Log("[ConfGen] Code & Racast generated.");
     }
 
+    /// <summary>
+    /// build 阶段：不需要 side，直接按已生成的类型读数据并序列化
+    /// </summary>
     public static void BuildBinary(string inputDir, string outBytesFile, string outManifestFile)
     {
         var confType = AppDomain.CurrentDomain
@@ -102,7 +109,6 @@ public static class ConfGen
         Directory.CreateDirectory(tempRoot);
         Directory.CreateDirectory(outDir);
 
-        // 最小 csproj（仅编 ConfData.cs，引用 MemoryPack）
         var csprojPath = Path.Combine(tempRoot, "ConfDataHost.csproj");
         File.WriteAllText(csprojPath, """
 <Project Sdk="Microsoft.NET.Sdk">
@@ -123,7 +129,6 @@ public static class ConfGen
 
         File.Copy(confDataCsPath, Path.Combine(tempRoot, "ConfData.cs"), overwrite: true);
 
-        // 仅错误（抑制警告/普通输出）
         var psi = new ProcessStartInfo("dotnet",
             $"build \"{csprojPath}\" -c Release -nologo -clp:ErrorsOnly -p:UseAppHost=false -o \"{outDir}\"")
         { UseShellExecute = false };
@@ -171,8 +176,8 @@ public static class ConfGen
     // ================= 核心：读表 → 填充 → 序列化 =================
     private static void BuildBinaryCore(string inputDir, string outBytesFile, string outManifestFile, Type confType)
     {
-        var scan = ScanInput(inputDir);
-
+        // build 不用 side；这里只拿文件/工作表路径等元信息
+        var scan = ScanInput(inputDir, "ALL");
         Directory.CreateDirectory(Path.GetDirectoryName(outBytesFile)!);
         Directory.CreateDirectory(Path.GetDirectoryName(outManifestFile)!);
 
@@ -208,7 +213,7 @@ public static class ConfGen
                 else if (filePath.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase) ||
                          filePath.EndsWith(".xls",  StringComparison.OrdinalIgnoreCase))
                 {
-                    ReadExcelFile(filePath, scan, elemType, subFields, data, className, confType);
+                    ReadExcelFile(filePath, elemType, subFields, data, className, confType);
                 }
                 else
                 {
@@ -273,9 +278,10 @@ public static class ConfGen
         }
     }
 
-    // ================= 扫描 & RacastSet 生成 =================
-    private static GenCodeContent ScanInput(string inputDir)
+    // ================= 扫描（仅表头） & RacastSet 生成 =================
+    private static GenCodeContent ScanInput(string inputDir, string side = "ALL")
     {
+        side = NormalizeSide(side);
         Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
 
         var result = new GenCodeContent { classes = new List<ClassContent>() };
@@ -284,9 +290,10 @@ public static class ConfGen
         string[] xlsxFiles = Directory.Exists(inputDir) ? Directory.GetFiles(inputDir, "*.xlsx", SearchOption.AllDirectories) : Array.Empty<string>();
         string[] xlsFiles  = Directory.Exists(inputDir) ? Directory.GetFiles(inputDir, "*.xls",  SearchOption.AllDirectories) : Array.Empty<string>();
 
-        // CSV
+        // ===== CSV：只读首行表头；其它都从 schema.json =====
         foreach (var file in csvFiles)
         {
+            // 1) 读首行表头
             var config = new CsvConfiguration(CultureInfo.InvariantCulture)
             {
                 HasHeaderRecord = true,
@@ -296,36 +303,64 @@ public static class ConfGen
                 BadDataFound = null
             };
 
-            List<string> propertyNames;
-            List<string> propertyTypes;   // 第3行：类型
-            List<int?>   keyPriorities;   // 第2行：优先级
-
+            var headerSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             using (var reader = new StreamReader(file))
             using (var csv = new CsvReader(reader, config))
             {
                 if (!csv.Read() || !csv.ReadHeader()) { Warn($"[Warn] CSV {file} missing header"); continue; }
-                propertyNames = csv.HeaderRecord.Select(ReadConfEditorUtil.ToCamelLower).ToList();
-
-                if (!csv.Read()) { Warn($"[Warn] CSV {file} missing priority row"); continue; }
-                keyPriorities = ParsePriorityRow(propertyNames.Count, i => csv.GetField(i));
-
-                if (!csv.Read()) { Warn($"[Warn] CSV {file} missing type row"); continue; }
-                propertyTypes = new List<string>(propertyNames.Count);
-                for (int i = 0; i < propertyNames.Count; i++)
-                    propertyTypes.Add(csv.GetField(i)?.Trim() ?? "string");
+                foreach (var h in csv.HeaderRecord)
+                    headerSet.Add(ReadConfEditorUtil.ToCamelLower(h));
             }
 
-            if (propertyNames.Count != propertyTypes.Count)
+            // 2) 读 schema.json（表级 + 列级）
+            var sp = SchemaPathFor(file);
+            if (!File.Exists(sp))
             {
-                Warn($"[Warn] CSV {file} header/type count mismatch");
+                Warn($"[Warn] Schema not found for CSV: {file}.schema.json . Skip table.");
+                continue; // 强约束：必须有 schema
+            }
+
+            var ts = ReadJson<TableSchema>(sp) ?? new TableSchema();
+            var tableCs = ResolveCsType(ts.table_properties, "ALL");
+            // 表级不匹配 => 整张跳过
+            if (!MatchesSide(tableCs, side))
+            {
+                if (Verbose) Log($"[Filter] CSV {Path.GetFileName(file)} table cs={tableCs} side={side} => SKIP");
                 continue;
             }
 
-            string className = ReadConfEditorUtil.ToCamelUpper(Path.GetFileNameWithoutExtension(file));
-            var props = new List<GenCodeProp>();
-            for (int i = 0; i < propertyNames.Count; i++)
-                props.Add(new GenCodeProp { name = propertyNames[i], propType = MapCsvTypeToCSharpType(propertyTypes[i]) });
+            // 3) 以 schema.columns 的排序（col_sort/声明顺序）为准；列只看“列自身 cs_type”，默认 ALL
+            var orderedCols = (ts.columns ?? new()).Select((c, idx) => (c, idx))
+                .OrderBy(x => x.c.col_sort ?? x.idx)
+                .Select(x => x.c);
 
+            var props = new List<GenCodeProp>();
+            var keyPriorities = new List<int?>();
+
+            foreach (var col in orderedCols)
+            {
+                var nameLower = ReadConfEditorUtil.ToCamelLower(col.col_name ?? "");
+                if (!headerSet.Contains(nameLower))
+                {
+                    if (Verbose) Log($"[Skip] CSV {Path.GetFileName(file)} col '{col.col_name}' not in header");
+                    continue;
+                }
+
+                var colCs = ResolveCsType(col.col_properties, "ALL");     // 仅看列自身（默认 ALL）
+                if (!MatchesSide(colCs, side))
+                {
+                    if (Verbose) Log($"[Filter] CSV {Path.GetFileName(file)} col '{col.col_name}' cs={colCs} side={side} => EXCLUDE");
+                    continue;
+                }
+
+                var csharpType = MapCsvTypeToCSharpType(col.value_type);
+                props.Add(new GenCodeProp { name = nameLower, propType = csharpType });
+                keyPriorities.Add(col.pk_order.HasValue && col.pk_order.Value > 0 ? col.pk_order : null);
+            }
+
+            if (props.Count == 0) { Warn($"[Warn] CSV {file} has no columns after filtering."); continue; }
+
+            string className = ReadConfEditorUtil.ToCamelUpper(Path.GetFileNameWithoutExtension(file));
             result.classes.Add(new ClassContent
             {
                 className     = className,
@@ -337,53 +372,87 @@ public static class ConfGen
             });
         }
 
-        // Excel（每个工作表 = 一个类）
+        // ===== Excel：每个 sheet 一个类；只读首行表头；其它都从 workbook schema =====
         foreach (var file in xlsxFiles.Concat(xlsFiles))
         {
+            // workbook schema
+            var sp = SchemaPathFor(file);
+            if (!File.Exists(sp))
+            {
+                Warn($"[Warn] Schema not found for Excel: {file}.schema.json . Skip workbook.");
+                continue; // 强约束：必须有 schema
+            }
+            var wb = ReadJson<WorkbookSchema>(sp) ?? new WorkbookSchema();
+
             using var stream = File.Open(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
             using var reader = ExcelReaderFactory.CreateReader(stream);
 
             do
             {
                 string sheetName = reader.Name;
-                var propertyNames = new List<string>();
-                var propertyTypes = new List<string>(); // 第3行
-                var keyPriorities = new List<int?>();   // 第2行
-                bool gotHeader = false, gotPriority = false, gotType = false;
 
-                while (reader.Read())
+                // 1) 找 sheet schema
+                var sheetSch = wb.sheets?.FirstOrDefault(s =>
+                    s.sheet_name.Equals(sheetName, StringComparison.OrdinalIgnoreCase));
+                if (sheetSch == null)
                 {
-                    if (!gotHeader)
-                    {
-                        for (int i = 0; i < reader.FieldCount; i++)
-                            propertyNames.Add(ReadConfEditorUtil.ToCamelLower(reader.GetString(i)?.Trim() ?? string.Empty));
-                        gotHeader = true; continue;
-                    }
-                    if (!gotPriority)
-                    {
-                        keyPriorities = ParsePriorityRow(propertyNames.Count, i => reader.IsDBNull(i) ? "" : reader.GetValue(i)?.ToString());
-                        gotPriority = true; continue;
-                    }
-                    if (!gotType)
-                    {
-                        for (int i = 0; i < reader.FieldCount; i++)
-                            propertyTypes.Add(reader.GetString(i)?.Trim() ?? "string");
-                        gotType = true; break;
-                    }
-                }
-
-                if (propertyNames.Count == 0) continue;
-                if (propertyNames.Count != propertyTypes.Count)
-                {
-                    Warn($"[Warn] Excel {file}/{sheetName} header/type count mismatch");
+                    Warn($"[Warn] Sheet '{sheetName}' in {file} not found in workbook schema. Skipped.");
                     continue;
                 }
 
-                string className = ReadConfEditorUtil.ToCamelUpper(sheetName);
-                var props = new List<GenCodeProp>();
-                for (int i = 0; i < propertyNames.Count; i++)
-                    props.Add(new GenCodeProp { name = propertyNames[i], propType = MapCsvTypeToCSharpType(propertyTypes[i]) });
+                // 2) 读首行表头
+                var headerSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                if (reader.Read())
+                {
+                    for (int i = 0; i < reader.FieldCount; i++)
+                        headerSet.Add(ReadConfEditorUtil.ToCamelLower(reader.GetValue(i)?.ToString()?.Trim() ?? string.Empty));
+                }
+                if (headerSet.Count == 0)
+                {
+                    Warn($"[Warn] Excel {file}/{sheetName} missing header.");
+                    continue;
+                }
 
+                // 3) 先判 Sheet 侧别；不匹配直接整张跳过
+                var sheetCs = ResolveCsType(sheetSch.sheet_properties, "ALL");
+                if (!MatchesSide(sheetCs, side))
+                {
+                    if (Verbose) Log($"[Filter] XLSX {Path.GetFileName(file)}/{sheetName} sheet cs={sheetCs} side={side} => SKIP");
+                    continue;
+                }
+
+                // 4) 列只看“列自身 cs_type”，默认 ALL
+                var orderedCols = (sheetSch.columns ?? new()).Select((c, idx) => (c, idx))
+                    .OrderBy(x => x.c.col_sort ?? x.idx)
+                    .Select(x => x.c);
+
+                var props = new List<GenCodeProp>();
+                var keyPriorities = new List<int?>();
+
+                foreach (var col in orderedCols)
+                {
+                    var nameLower = ReadConfEditorUtil.ToCamelLower(col.col_name ?? "");
+                    if (!headerSet.Contains(nameLower))
+                    {
+                        if (Verbose) Log($"[Skip] XLSX {Path.GetFileName(file)}/{sheetName} col '{col.col_name}' not in header");
+                        continue;
+                    }
+
+                    var colCs = ResolveCsType(col.col_properties, "ALL");   // 仅看列自身（默认 ALL）
+                    if (!MatchesSide(colCs, side))
+                    {
+                        if (Verbose) Log($"[Filter] XLSX {Path.GetFileName(file)}/{sheetName} col '{col.col_name}' cs={colCs} side={side} => EXCLUDE");
+                        continue;
+                    }
+
+                    var csharpType = MapCsvTypeToCSharpType(col.value_type);
+                    props.Add(new GenCodeProp { name = nameLower, propType = csharpType });
+                    keyPriorities.Add(col.pk_order.HasValue && col.pk_order.Value > 0 ? col.pk_order : null);
+                }
+
+                if (props.Count == 0) { Warn($"[Warn] Excel {file}/{sheetName} has no columns after filtering."); continue; }
+
+                string className = ReadConfEditorUtil.ToCamelUpper(sheetName);
                 result.classes.Add(new ClassContent
                 {
                     className     = className,
@@ -507,7 +576,7 @@ public static class ConfGen
             File.WriteAllText(path, "public interface IRacastSet { }", new UTF8Encoding(false));
     }
 
-    // ================= 读取 CSV / Excel & 类型转换 =================
+    // ================= 读取 CSV / Excel 数据（仅跳过表头） =================
     private static void ReadCsvFile(string filePath, Type elemType, FieldInfo[] subFields,
         List<string> headerNames, List<object> confList)
     {
@@ -525,9 +594,6 @@ public static class ConfGen
 
         if (!csv.Read() || !csv.ReadHeader()) { Warn($"[Warn] CSV {filePath} missing header"); return; }
         headerNames.AddRange(csv.HeaderRecord.Select(ReadConfEditorUtil.ToCamelLower));
-
-        if (!csv.Read()) { Warn($"[Warn] CSV {filePath} missing priority row"); return; }
-        if (!csv.Read()) { Warn($"[Warn] CSV {filePath} missing type row"); return; }
 
         while (csv.Read())
         {
@@ -553,8 +619,7 @@ public static class ConfGen
         }
     }
 
-    private static void ReadExcelFile(string filePath, GenCodeContent scan,
-                                      Type elemType, FieldInfo[] subFields, object data,
+    private static void ReadExcelFile(string filePath, Type elemType, FieldInfo[] subFields, object data,
                                       string currentClassName, Type confDataType)
     {
         using var stream = File.Open(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
@@ -575,19 +640,18 @@ public static class ConfGen
             }
 
             var headerNames = new List<string>();
-            var confList = new List<object>();
-            bool isHeader = true, prioritySkipped = false, typeSkipped = false;
+            bool gotHeader = false;
+            List<object> confList = new();
 
             while (reader.Read())
             {
-                if (isHeader)
+                if (!gotHeader)
                 {
                     for (int i = 0; i < reader.FieldCount; i++)
                         headerNames.Add(ReadConfEditorUtil.ToCamelLower(reader.GetValue(i)?.ToString()?.Trim() ?? string.Empty));
-                    isHeader = false; continue;
+                    gotHeader = true;
+                    continue;
                 }
-                if (!prioritySkipped) { prioritySkipped = true; continue; }
-                if (!typeSkipped)     { typeSkipped = true;     continue; }
 
                 var rowObj = Activator.CreateInstance(elemType)!;
                 for (int i = 0; i < subFields.Length; i++)
@@ -617,6 +681,7 @@ public static class ConfGen
         } while (reader.NextResult());
     }
 
+    // ================= 值转换/类型映射 =================
     private static object ConvertValue(string? value, Type targetType)
     {
         if (string.IsNullOrWhiteSpace(value)) return GetDefaultValue(targetType);
@@ -627,7 +692,7 @@ public static class ConfGen
             if (targetType == typeof(long))      return long.TryParse(value, out var v) ? v : 0L;
             if (targetType == typeof(float))     return float.TryParse(value, out var v) ? v : 0f;
             if (targetType == typeof(double))    return double.TryParse(value, out var v) ? v : 0d;
-            if (targetType == typeof(bool))      return bool.TryParse(value, out var v) ? v : false;
+            if (targetType == typeof(bool))      return bool.TryParse(value, out var v) && v;
             if (targetType == typeof(int[]))     return ParseIntArray(value);
             if (targetType == typeof(List<int>)) return ParseIntList(value);
         }
@@ -656,18 +721,21 @@ public static class ConfGen
                     .Select(s => int.TryParse(s.Trim(), out var v) ? v : 0).ToList();
     }
 
-    private static string MapCsvTypeToCSharpType(string csvType) => csvType switch
+    private static string MapCsvTypeToCSharpType(string csvType)
     {
-        "int"       => "int",
-        "string"    => "string",
-        "long"      => "long",
-        "int[]"     => "int[]",
-        "float"     => "float",
-        "double"    => "double",
-        "bool"      => "bool",
-        "List<int>" => "List<int>",
-        _           => "string",
-    };
+        var t = (csvType ?? "").Trim().ToLowerInvariant();
+        return t switch
+        {
+            "int"       => "int",
+            "long"      => "long",
+            "float"     => "float",
+            "double"    => "double",
+            "bool"      => "bool",
+            "int[]"     => "int[]",
+            "list<int>" => "List<int>",
+            _           => "string",
+        };
+    }
 
     private static IEnumerable<Type> SafeGetTypes(Assembly asm)
     {
@@ -685,7 +753,7 @@ public static class ConfGen
         public string FilePath  = "";
         public string classDef  = "";
         public List<GenCodeProp> props = new();
-        public List<int?> keyPriorities = new(); // 第二行优先级
+        public List<int?> keyPriorities = new(); // 来自 schema 的 pk_order
     }
 
     public class GenCodeContent { public List<ClassContent> classes = new(); }
@@ -725,14 +793,9 @@ public static class ConfGen
     // ====== RacastSet 生成的字符串工具 ======
     private static List<int?> ParsePriorityRow(int count, Func<int, string?> getter)
     {
+        // 不再使用旧优先级行（保留兼容）
         var pri = new List<int?>(count);
-        for (int i = 0; i < count; i++)
-        {
-            var cell = getter(i);
-            if (string.IsNullOrWhiteSpace(cell)) { pri.Add(null); continue; }
-            if (int.TryParse(cell.Trim(), out int p) && p > 0) pri.Add(p);
-            else pri.Add(null);
-        }
+        for (int i = 0; i < count; i++) pri.Add(null);
         return pri;
     }
 
@@ -769,5 +832,81 @@ public static class ConfGen
         int last = keys.Count - 2;
         sb.Append($".ToDictionary(g{last} => g{last}.Key, g{last} => g{last}.ToDictionary(e => e.{keys.Last()}, e => e));");
         return sb.ToString();
+    }
+
+    // =================== schema 读取/筛选辅助 ===================
+    class SchemaProperty { public string property_name { get; set; } = ""; public string property_value { get; set; } = ""; }
+    class ColumnSchema
+    {
+        public string col_name { get; set; } = "";
+        public string value_type { get; set; } = "string";
+        public int?   pk_order { get; set; } = null;
+        public bool?  primary_key { get; set; } = null;
+        public int?   col_sort { get; set; } = null;                   // 支持 schema 指定列顺序
+        public List<SchemaProperty> col_properties { get; set; } = new();
+    }
+    class TableSchema
+    {
+        public string table_name { get; set; } = "";
+        public List<ColumnSchema> columns { get; set; } = new();
+        public List<SchemaProperty> table_properties { get; set; } = new();
+    }
+    class SheetSchema
+    {
+        public string sheet_name { get; set; } = "";
+        public List<ColumnSchema> columns { get; set; } = new();
+        public List<SchemaProperty> sheet_properties { get; set; } = new();
+    }
+    class WorkbookSchema
+    {
+        public string workbook_name { get; set; } = "";
+        public List<SheetSchema> sheets { get; set; } = new();
+    }
+
+    // ---- 侧别判定 ----
+    static string NormalizeSide(string s)
+    {
+        if (string.IsNullOrWhiteSpace(s)) return "ALL";
+        s = s.Trim().ToUpperInvariant();
+        return s switch
+        {
+            "C" => "C",
+            "S" => "S",
+            "ALL" => "ALL",
+            "NONE" => "NONE",
+            _ => "ALL",
+        };
+    }
+
+    static string ResolveCsType(List<SchemaProperty>? props, string fallback = "ALL")
+    {
+        var v = props?.FirstOrDefault(p => string.Equals(p.property_name, "cs_type", StringComparison.OrdinalIgnoreCase))?.property_value;
+        return NormalizeSide(string.IsNullOrWhiteSpace(v) ? fallback : v!);
+    }
+
+    // 表/Sheet 是否匹配目标侧
+    static bool MatchesSide(string csType, string target)
+    {
+        csType = NormalizeSide(csType);
+        target = NormalizeSide(target);
+        if (csType == "NONE") return false;
+        if (target == "ALL")  return csType != "NONE";
+        return csType == "ALL" || csType == target;
+    }
+
+    static T? ReadJson<T>(string path)
+    {
+        var opt = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+        var json = File.ReadAllText(path);
+        return JsonSerializer.Deserialize<T>(json, opt);
+    }
+
+    static string SchemaPathFor(string tablePath) => tablePath + ".schema.json";
+
+    static ColumnSchema? FindColSchema(IEnumerable<ColumnSchema> cols, string headerName)
+    {
+        return cols?.FirstOrDefault(c =>
+            headerName.Equals(ReadConfEditorUtil.ToCamelLower(c.col_name), StringComparison.OrdinalIgnoreCase) ||
+            headerName.Equals(c.col_name, StringComparison.OrdinalIgnoreCase));
     }
 }

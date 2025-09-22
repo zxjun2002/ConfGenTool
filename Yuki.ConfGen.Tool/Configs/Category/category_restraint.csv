@@ -1,6 +1,4 @@
 id,self_category,enemy_category,effect_typ,value
-,1,2,,
-int,int,int,int,int
 1,1,2,1,1000
 2,1,3,2,500
 3,2,1,2,500

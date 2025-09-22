@@ -1,0 +1,87 @@
+{
+  "workbook_name": "Test.xlsx",
+  "sheets": [
+    {
+      "sheet_name": "TestExcel",
+      "columns": [
+        {
+          "col_name": "id",
+          "value_type": "int",
+          "pk_order": 1,
+          "primary_key": true,
+          "col_sort": 0,
+          "col_properties": [
+            {
+              "property_name": "cs_type",
+              "property_value": "ALL"
+            }
+          ]
+        },
+        {
+          "col_name": "desc",
+          "value_type": "string",
+          "pk_order": -1,
+          "primary_key": false,
+          "col_sort": 1,
+          "col_properties": [
+            {
+              "property_name": "cs_type",
+              "property_value": "C"
+            }
+          ]
+        },
+        {
+          "col_name": "server",
+          "value_type": "string",
+          "pk_order": -1,
+          "primary_key": false,
+          "col_sort": 2,
+          "col_properties": [
+            {
+              "property_name": "cs_type",
+              "property_value": "S"
+            }
+          ]
+        }
+      ],
+      "sheet_properties": [
+        {
+          "property_name": "cs_type",
+          "property_value": "ALL"
+        }
+      ]
+    },
+    {
+      "sheet_name": "TestClient",
+      "columns": [
+        {
+          "col_name": "id",
+          "value_type": "int",
+          "pk_order": 1,
+          "primary_key": true,
+          "col_sort": 0,
+          "col_properties": []
+        },
+        {
+          "col_name": "desc",
+          "value_type": "string",
+          "pk_order": -1,
+          "primary_key": false,
+          "col_sort": 1,
+          "col_properties": [
+            {
+              "property_name": "cs_type",
+              "property_value": "NONE"
+            }
+          ]
+        }
+      ],
+      "sheet_properties": [
+        {
+          "property_name": "cs_type",
+          "property_value": "S"
+        }
+      ]
+    }
+  ]
+}

@@ -34,7 +34,8 @@ internal static class Program
                 case "gen":
                 {
                     var o = GenOptions.Parse(rest);
-                    ConfGen.GenerateCode(o.Input, o.OutCs, o.OutRacast);
+                    if (ConfGen.Verbose) Console.WriteLine($"[gen] side = {o.Side}");
+                    ConfGen.GenerateCode(o.Input, o.OutCs, o.OutRacast, o.Side);
                     if (ConfGen.Verbose) Console.WriteLine("Gen done.");
                     return 0;
                 }
@@ -89,7 +90,7 @@ internal static class Program
     private const string Usage =
 @"Usage:
   yuki-confgen gen
-      --input <dir> --out-cs <file> --out-racast <dir> [--verbose] [--no-manifest]
+      --input <dir> --out-cs <file> --out-racast <dir> [--side C|S|ALL|NONE] [--verbose] [--no-manifest]
 
   yuki-confgen build
       --input <dir> --out-bytes <file> --out-manifest <file>
@@ -97,20 +98,30 @@ internal static class Program
       [--verbose] [--no-manifest]";
 }
 
-internal sealed record GenOptions(string Input, string OutCs, string OutRacast)
+internal sealed record GenOptions(string Input, string OutCs, string OutRacast, string Side)
 {
     public static GenOptions Parse(string[] args) => new(
         Get(args, "--input"),
         Get(args, "--out-cs"),
-        Get(args, "--out-racast")
+        Get(args, "--out-racast"),
+        GetOr(args, "--side", "ALL") // 传给 ConfGen
     );
 
+    // ----- 本地解析工具（支持 --k v 和 --k=v） -----
     private static string Get(string[] a, string key)
+        => TryGet(a, key) ?? throw new ArgumentException($"Missing {key}");
+    private static string GetOr(string[] a, string key, string def)
+        => TryGet(a, key) ?? def;
+    private static string? TryGet(string[] a, string key)
     {
-        for (int i = 0; i < a.Length - 1; i++)
+        for (int i = 0; i < a.Length; i++)
+        {
             if (a[i].Equals(key, StringComparison.OrdinalIgnoreCase))
-                return a[i + 1];
-        throw new ArgumentException($"Missing {key}");
+                return (i + 1 < a.Length) ? a[i + 1] : null;
+            if (a[i].StartsWith(key + "=", StringComparison.OrdinalIgnoreCase))
+                return a[i].Substring(key.Length + 1);
+        }
+        return null;
     }
 }
 
@@ -127,25 +138,23 @@ internal sealed record BuildOptions(
         GetOr(args, "--configuration", "Debug")
     );
 
+    // ----- 本地解析工具（支持 --k v 和 --k=v） -----
     private static string Get(string[] a, string key)
-    {
-        for (int i = 0; i < a.Length - 1; i++)
-            if (a[i].Equals(key, StringComparison.OrdinalIgnoreCase))
-                return a[i + 1];
-        throw new ArgumentException($"Missing {key}");
-    }
+        => TryGet(a, key) ?? throw new ArgumentException($"Missing {key}");
     private static string? GetOrNull(string[] a, string key)
+        => TryGet(a, key);
+    private static string GetOr(string[] a, string key, string def)
+        => TryGet(a, key) ?? def;
+    private static string? TryGet(string[] a, string key)
     {
-        for (int i = 0; i < a.Length - 1; i++)
+        for (int i = 0; i < a.Length; i++)
+        {
             if (a[i].Equals(key, StringComparison.OrdinalIgnoreCase))
-                return a[i + 1];
+                return (i + 1 < a.Length) ? a[i + 1] : null;
+            if (a[i].StartsWith(key + "=", StringComparison.OrdinalIgnoreCase))
+                return a[i].Substring(key.Length + 1);
+        }
         return null;
     }
-    private static string GetOr(string[] a, string key, string def)
-    {
-        for (int i = 0; i < a.Length - 1; i++)
-            if (a[i].Equals(key, StringComparison.OrdinalIgnoreCase))
-                return a[i + 1];
-        return def;
-    }
 }
+

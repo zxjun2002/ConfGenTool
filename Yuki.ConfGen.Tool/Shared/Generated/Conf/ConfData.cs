@@ -11,6 +11,7 @@ public partial class ConfData
     public BuffCt[] buffCt;
     public CategoryRestraint[] categoryRestraint;
     public SkillsCt[] skillsCt;
+    public TestExcel[] testExcel;
 }
 
 [MemoryPackable]
@@ -41,5 +42,12 @@ public partial class SkillsCt
     public int level;
     public string skillVale;
     public int priority;
+}
+
+[MemoryPackable]
+public partial class TestExcel
+{
+    public int id;
+    public string desc;
 }
 
