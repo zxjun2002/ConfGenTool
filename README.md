@@ -2,9 +2,10 @@
 
 迁移自 Unity 的配置表工具，提供 **.NET 原生运行** 的命令行/库能力，方便在 **战斗服** 或 **原生 C# 项目** 中使用同一套配置表生成流程与产物（强类型 C# 代码 + 二进制数据）。
 
-> Unity 原版参考：  
+> Unity 原版参考：<br>
 > [yuki-uitest（Gitee）](https://gitee.com/zxjun2002/yuki-uitest)
-> 配套工具：（目前生成设置全面转向json，因此搭配该工具使用）  
+
+> 配套工具：（目前生成设置全面转向json，因此搭配该工具使用）<br>
 > [schema-studio（Gitee）](https://gitee.com/zxjun2002/schema-studio)
 
 ---
