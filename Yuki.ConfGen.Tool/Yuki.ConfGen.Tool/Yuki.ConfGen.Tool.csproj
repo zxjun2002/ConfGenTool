@@ -9,7 +9,7 @@
     <ToolCommandName>yuki-confgen</ToolCommandName>
     <!-- 包 ID（安装/卸载/更新都用这个名字） -->
     <PackageId>zxjun2002.ConfGen.Tool</PackageId>
-    <Version>1.0.8</Version>
+    <Version>1.0.9</Version>
     <Authors>Yuki</Authors>
     <Company>Yuki</Company>
     <Description>Config generator (code + .bytes)</Description>
