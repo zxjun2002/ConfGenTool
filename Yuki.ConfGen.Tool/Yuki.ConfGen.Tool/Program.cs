@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -10,6 +10,8 @@ internal static class Program
         // 支持 .xls
         Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
 
+        // 全局默认：详细日志 & 不生成 manifest（通过日志函数体现，未实现 manifest 任何行为）
+
         if (args.Length == 0)
         {
             Console.Error.WriteLine(Usage);
@@ -18,14 +20,6 @@ internal static class Program
 
         try
         {
-            // 全局开关：--no-manifest
-            if (args.Any(a => a.Equals("--no-manifest", StringComparison.OrdinalIgnoreCase)))
-                ConfGen.EmitManifest = false;
-
-            // 详细日志：--verbose
-            if (args.Any(a => a.Equals("--verbose", StringComparison.OrdinalIgnoreCase)))
-                ConfGen.Verbose = true;
-
             var cmd  = args[0].ToLowerInvariant();
             var rest = args.Skip(1).ToArray();
 
@@ -34,44 +28,54 @@ internal static class Program
                 case "gen":
                 {
                     var o = GenOptions.Parse(rest);
-                    if (ConfGen.Verbose) Console.WriteLine($"[gen] side = {o.Side}");
-                    ConfGen.GenerateCode(o.Input, o.OutCs, o.OutRacast, o.Side);
-                    if (ConfGen.Verbose) Console.WriteLine("Gen done.");
+                    var outCs     = Path.Combine(o.OutDir, "ConfData.cs");
+                    var outRacast = Path.Combine(o.OutDir, "RacastSet");
+
+                    Console.WriteLine($"[gen] input={Path.GetFullPath(o.Input)}");
+                    Console.WriteLine($"[gen] out-cs={Path.GetFullPath(outCs)}");
+                    Console.WriteLine($"[gen] out-racast={Path.GetFullPath(outRacast)}");
+                    Console.WriteLine($"[gen] side={o.Side}");
+
+                    ConfGen.GenerateCode(o.Input, outCs, outRacast, o.Side);
+                    Console.WriteLine("Gen done.");
                     return 0;
                 }
 
                 case "build":
                 {
                     var o = BuildOptions.Parse(rest);
+                    var outBytes = Path.Combine(o.OutDir, "ConfData.bytes");
 
-                    if (!string.IsNullOrEmpty(o.ConfData))
+                    Console.WriteLine($"[build] input={Path.GetFullPath(o.Input)}");
+                    Console.WriteLine($"[build] out-bytes={Path.GetFullPath(outBytes)}");
+
+                    if (!string.IsNullOrEmpty(o.ConfDataDir))
                     {
-                        if (ConfGen.Verbose) Console.WriteLine($"[build] ConfData.cs = {Path.GetFullPath(o.ConfData!)}");
+                        var confDataCs = Path.Combine(o.ConfDataDir!, "ConfData.cs");
+                        Console.WriteLine($"[build] ConfData.cs = {Path.GetFullPath(confDataCs)}");
                         ConfGen.BuildBytesWithTempProject(
                             inputDir:        o.Input,
-                            outBytesFile:    o.OutBytes,
-                            outManifestFile: o.OutManifest,
-                            confDataCsPath:  o.ConfData!
+                            outBytesFile:    outBytes,
+                            confDataCsPath:  confDataCs
                         );
                     }
                     else if (!string.IsNullOrEmpty(o.Csproj))
                     {
-                        if (ConfGen.Verbose) Console.WriteLine($"[build] csproj = {Path.GetFullPath(o.Csproj!)} ({o.Configuration})");
+                        Console.WriteLine($"[build] csproj = {Path.GetFullPath(o.Csproj!)} ({o.Configuration})");
                         ConfGen.BuildWithCsproj(
                             inputDir:        o.Input,
-                            outBytesFile:    o.OutBytes,
-                            outManifestFile: o.OutManifest,
+                            outBytesFile:    outBytes,
                             csprojPath:      o.Csproj!,
                             configuration:   o.Configuration ?? "Debug"
                         );
                     }
                     else
                     {
-                        if (ConfGen.Verbose) Console.WriteLine("[build] use ConfData from loaded assemblies (no --confdata / --csproj)");
-                        ConfGen.BuildBinary(o.Input, o.OutBytes, o.OutManifest);
+                        Console.WriteLine("[build] use ConfData from loaded assemblies (no --confdata-dir / --csproj)");
+                        ConfGen.BuildBinary(o.Input, outBytes);
                     }
 
-                    if (ConfGen.Verbose) Console.WriteLine("Build done.");
+                    Console.WriteLine("Build done.");
                     return 0;
                 }
 
@@ -90,20 +94,18 @@ internal static class Program
     private const string Usage =
 @"Usage:
   yuki-confgen gen
-      --input <dir> --out-cs <file> --out-racast <dir> [--side C|S|ALL|NONE] [--verbose] [--no-manifest]
+      --input <dir> --out-dir <dir> [--side C|S|ALL|NONE]
 
   yuki-confgen build
-      --input <dir> --out-bytes <file> --out-manifest <file>
-      [--confdata <ConfData.cs> | --csproj <path-to-csproj> [--configuration Debug|Release]]
-      [--verbose] [--no-manifest]";
+      --input <dir> --out-dir <dir>
+      [--confdata-dir <dir> | --csproj <path-to-csproj> [--configuration Debug|Release]]";
 }
 
-internal sealed record GenOptions(string Input, string OutCs, string OutRacast, string Side)
+internal sealed record GenOptions(string Input, string OutDir, string Side)
 {
     public static GenOptions Parse(string[] args) => new(
         Get(args, "--input"),
-        Get(args, "--out-cs"),
-        Get(args, "--out-racast"),
+        Get(args, "--out-dir"),
         GetOr(args, "--side", "ALL") // 传给 ConfGen
     );
 
@@ -126,14 +128,13 @@ internal sealed record GenOptions(string Input, string OutCs, string OutRacast, 
 }
 
 internal sealed record BuildOptions(
-    string Input, string OutBytes, string OutManifest,
-    string? ConfData, string? Csproj, string? Configuration)
+    string Input, string OutDir,
+    string? ConfDataDir, string? Csproj, string? Configuration)
 {
     public static BuildOptions Parse(string[] args) => new(
         Get(args, "--input"),
-        Get(args, "--out-bytes"),
-        Get(args, "--out-manifest"),
-        GetOrNull(args, "--confdata"),
+        Get(args, "--out-dir"),
+        GetOrNull(args, "--confdata-dir"),
         GetOrNull(args, "--csproj"),
         GetOr(args, "--configuration", "Debug")
     );
@@ -157,4 +158,3 @@ internal sealed record BuildOptions(
         return null;
     }
 }
-
