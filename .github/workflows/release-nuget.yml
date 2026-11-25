@@ -1,0 +1,122 @@
+name: Release NuGet Package
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '发布的版本号（例如 1.0.10 或 1.0.10-beta.1，可带或不带 v 前缀）'
+        required: true
+        type: string
+      dry_run:
+        description: '仅测试打包，不推送到 NuGet'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+env:
+  PROJECT_PATH: Yuki.ConfGen.Tool/Yuki.ConfGen.Tool/Yuki.ConfGen.Tool.csproj
+  DOTNET_VERSION: '8.0.x'
+  ARTIFACTS_DIR: ./artifacts
+
+jobs:
+  pack-and-publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Resolve and validate version
+        id: version
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            RAW_VERSION="$INPUT_VERSION"
+          else
+            RAW_VERSION="${GITHUB_REF_NAME}"
+          fi
+
+          # 去掉开头可能存在的 v/V 前缀
+          VERSION="${RAW_VERSION#v}"
+          VERSION="${VERSION#V}"
+
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::非法版本号 '$RAW_VERSION'，请使用语义化版本，例如 v1.0.10 或 v1.0.10-beta.1"
+            exit 1
+          fi
+
+          IS_PRERELEASE="false"
+          if [[ "$VERSION" == *-* ]]; then
+            IS_PRERELEASE="true"
+          fi
+
+          echo "Resolved version: $VERSION (prerelease: $IS_PRERELEASE)"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "is_prerelease=$IS_PRERELEASE" >> "$GITHUB_OUTPUT"
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Restore dependencies
+        run: dotnet restore "${{ env.PROJECT_PATH }}"
+
+      - name: Pack NuGet package
+        run: |
+          dotnet pack "${{ env.PROJECT_PATH }}" \
+            --configuration Release \
+            --no-restore \
+            --output "${{ env.ARTIFACTS_DIR }}" \
+            -p:Version="${{ steps.version.outputs.version }}"
+
+      - name: List generated packages
+        run: ls -lh "${{ env.ARTIFACTS_DIR }}"
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nuget-package-${{ steps.version.outputs.version }}
+          path: ${{ env.ARTIFACTS_DIR }}/*.nupkg
+
+      - name: Push to NuGet.org
+        if: ${{ inputs.dry_run != true }}
+        shell: bash
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        run: |
+          if [ -z "$NUGET_API_KEY" ]; then
+            echo "::error::未配置 NUGET_API_KEY！请在仓库 Settings -> Secrets and variables -> Actions 中新增名为 NUGET_API_KEY 的 Repository secret。"
+            exit 1
+          fi
+
+          dotnet nuget push "${{ env.ARTIFACTS_DIR }}/*.nupkg" \
+            --api-key "$NUGET_API_KEY" \
+            --source https://api.nuget.org/v3/index.json \
+            --skip-duplicate
+
+      - name: Create GitHub Release
+        if: ${{ github.ref_type == 'tag' && inputs.dry_run != true }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          FLAGS=(--generate-notes --title "$TAG")
+          if [ "${{ steps.version.outputs.is_prerelease }}" = "true" ]; then
+            FLAGS+=(--prerelease)
+          fi
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${{ env.ARTIFACTS_DIR }}"/*.nupkg --clobber
+          else
+            gh release create "$TAG" "${{ env.ARTIFACTS_DIR }}"/*.nupkg "${FLAGS[@]}"
+          fi
