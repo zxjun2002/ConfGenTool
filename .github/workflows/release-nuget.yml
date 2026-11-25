@@ -18,6 +18,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 env:
   PROJECT_PATH: Yuki.ConfGen.Tool/Yuki.ConfGen.Tool/Yuki.ConfGen.Tool.csproj
@@ -87,17 +88,19 @@ jobs:
           name: nuget-package-${{ steps.version.outputs.version }}
           path: ${{ env.ARTIFACTS_DIR }}/*.nupkg
 
+      - name: NuGet Login (Trusted Publishing)
+        if: ${{ inputs.dry_run != true }}
+        id: nuget-login
+        uses: NuGet/login@v1
+        with:
+          user: zxjun2002
+
       - name: Push to NuGet.org
         if: ${{ inputs.dry_run != true }}
         shell: bash
         env:
-          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+          NUGET_API_KEY: ${{ steps.nuget-login.outputs.NUGET_API_KEY }}
         run: |
-          if [ -z "$NUGET_API_KEY" ]; then
-            echo "::error::未配置 NUGET_API_KEY！请在仓库 Settings -> Secrets and variables -> Actions 中新增名为 NUGET_API_KEY 的 Repository secret。"
-            exit 1
-          fi
-
           dotnet nuget push "${{ env.ARTIFACTS_DIR }}/*.nupkg" \
             --api-key "$NUGET_API_KEY" \
             --source https://api.nuget.org/v3/index.json \
