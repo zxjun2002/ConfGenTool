@@ -7,7 +7,9 @@ using System.IO;
 using System.Linq;
 using System.Linq.Expressions;
 using System.Reflection;
+#if NET6_0_OR_GREATER
 using System.Runtime.Loader;
+#endif
 using System.Text;
 using MemoryPack;
 
@@ -27,6 +29,7 @@ public static partial class ConfGen
         BuildBinaryCore(inputDir, outBytesFile, confType);
     }
 
+#if NET6_0_OR_GREATER
     public static void BuildBytesWithTempProject(string inputDir, string outBytesFile, string confDataCsPath)
     {
         if (!File.Exists(confDataCsPath))
@@ -100,6 +103,7 @@ public static partial class ConfGen
 
         BuildBinaryCore(inputDir, outBytesFile, confType);
     }
+#endif
 
     // ================= 核心：读表 → 填充 → 序列化 =================
     private static void BuildBinaryCore(string inputDir, string outBytesFile, Type confType)

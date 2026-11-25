@@ -1,4 +1,4 @@
-name: Release NuGet Package
+name: Release NuGet & Unity UPM
 
 on:
   push:
@@ -7,11 +7,11 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: '发布的版本号（例如 1.0.10 或 1.0.10-beta.1，可带或不带 v 前缀）'
+        description: '发布的版本号（例如 1.0.11 或 1.0.11-beta.1，可带或不带 v 前缀）'
         required: true
         type: string
       dry_run:
-        description: '仅测试打包，不推送到 NuGet'
+        description: '仅测试打包，不推送到 NuGet / upm 分支 / Release'
         required: false
         default: false
         type: boolean
@@ -21,12 +21,13 @@ permissions:
   id-token: write
 
 env:
-  PROJECT_PATH: Yuki.ConfGen.Tool/Yuki.ConfGen.Tool/Yuki.ConfGen.Tool.csproj
+  TOOL_PROJECT: Yuki.ConfGen.Tool/Yuki.ConfGen.Tool/Yuki.ConfGen.Tool.csproj
+  CORE_PROJECT: Yuki.ConfGen.Tool/Yuki.ConfGen.Core/Yuki.ConfGen.Core.csproj
   DOTNET_VERSION: '8.0.x'
   ARTIFACTS_DIR: ./artifacts
 
 jobs:
-  pack-and-publish:
+  build-and-publish:
     runs-on: ubuntu-latest
 
     steps:
@@ -45,12 +46,11 @@ jobs:
             RAW_VERSION="${GITHUB_REF_NAME}"
           fi
 
-          # 去掉开头可能存在的 v/V 前缀
           VERSION="${RAW_VERSION#v}"
           VERSION="${VERSION#V}"
 
           if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
-            echo "::error::非法版本号 '$RAW_VERSION'，请使用语义化版本，例如 v1.0.10 或 v1.0.10-beta.1"
+            echo "::error::非法版本号 '$RAW_VERSION'，请使用语义化版本，例如 v1.0.11 或 v1.0.11-beta.1"
             exit 1
           fi
 
@@ -68,25 +68,94 @@ jobs:
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
-      - name: Restore dependencies
-        run: dotnet restore "${{ env.PROJECT_PATH }}"
+      - name: Restore solution
+        run: dotnet restore Yuki.ConfGen.Tool/Yuki.ConfGen.Tool.sln
 
-      - name: Pack NuGet package
+      - name: Pack NuGet tool package
         run: |
-          dotnet pack "${{ env.PROJECT_PATH }}" \
+          dotnet pack "${{ env.TOOL_PROJECT }}" \
             --configuration Release \
             --no-restore \
-            --output "${{ env.ARTIFACTS_DIR }}" \
+            --output "${{ env.ARTIFACTS_DIR }}/nuget" \
             -p:Version="${{ steps.version.outputs.version }}"
 
-      - name: List generated packages
-        run: ls -lh "${{ env.ARTIFACTS_DIR }}"
+      - name: Build Unity netstandard2.1 DLLs
+        run: |
+          dotnet publish "${{ env.CORE_PROJECT }}" \
+            --configuration Release \
+            --framework netstandard2.1 \
+            --no-restore \
+            --output "${{ env.ARTIFACTS_DIR }}/upm-publish" \
+            -p:Version="${{ steps.version.outputs.version }}" \
+            -p:CopyLocalLockFileAssemblies=true
 
-      - name: Upload package artifact
+      - name: Assemble Unity UPM package
+        shell: bash
+        env:
+          PKG_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          UPM_DIR="${{ env.ARTIFACTS_DIR }}/upm-pkg"
+          PLUGINS_DIR="$UPM_DIR/Editor/Plugins"
+          PUB_DIR="${{ env.ARTIFACTS_DIR }}/upm-publish"
+
+          rm -rf "$UPM_DIR"
+          mkdir -p "$PLUGINS_DIR"
+          cp -r upm-template/. "$UPM_DIR/"
+          cp LICENSE "$UPM_DIR/LICENSE.md"
+
+          # 写入版本号到 package.json
+          python3 -c '
+          import json, os
+          p = os.path.join(os.environ["ARTIFACTS_DIR"], "upm-pkg", "package.json")
+          with open(p, "r", encoding="utf-8") as f:
+              data = json.load(f)
+          data["version"] = os.environ["PKG_VERSION"]
+          with open(p, "w", encoding="utf-8") as f:
+              json.dump(data, f, indent=2, ensure_ascii=False)
+              f.write("\n")
+          '
+
+          # 精选拷贝 Editor 所需 DLL（排除 MemoryPack.Core / Newtonsoft.Json 等避免与 Unity 冲突）
+          REQUIRED_DLLS=(
+            "Yuki.ConfGen.Core.dll"
+            "CsvHelper.dll"
+            "ExcelDataReader.dll"
+            "ExcelDataReader.DataSet.dll"
+          )
+          for dll in "${REQUIRED_DLLS[@]}"; do
+            if [ ! -f "$PUB_DIR/$dll" ]; then
+              echo "::error::缺少必要的 DLL: $PUB_DIR/$dll"
+              ls -la "$PUB_DIR"
+              exit 1
+            fi
+            cp "$PUB_DIR/$dll" "$PLUGINS_DIR/"
+          done
+
+          if [ -f "$PUB_DIR/System.Text.Encoding.CodePages.dll" ]; then
+            cp "$PUB_DIR/System.Text.Encoding.CodePages.dll" "$PLUGINS_DIR/"
+          fi
+
+          # 为 UPM 包内所有文件/文件夹/DLL 生成确定性 GUID 的 .meta（DLL 均设为 Editor 专用）
+          python3 scripts/generate-upm-meta.py "$UPM_DIR"
+
+          # 打包成标准 UPM tarball (.tgz)，供 GitHub Release 手动下载导入
+          mkdir -p "${{ env.ARTIFACTS_DIR }}/upm-tarball"
+          npm pack "$UPM_DIR" --pack-destination "${{ env.ARTIFACTS_DIR }}/upm-tarball"
+
+          echo "=== NuGet artifacts ==="
+          ls -lh "${{ env.ARTIFACTS_DIR }}/nuget"
+          echo "=== UPM DLLs ==="
+          ls -lh "$PLUGINS_DIR"
+          echo "=== UPM tarball ==="
+          ls -lh "${{ env.ARTIFACTS_DIR }}/upm-tarball"
+
+      - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: nuget-package-${{ steps.version.outputs.version }}
-          path: ${{ env.ARTIFACTS_DIR }}/*.nupkg
+          name: release-artifacts-${{ steps.version.outputs.version }}
+          path: |
+            ${{ env.ARTIFACTS_DIR }}/nuget/*.nupkg
+            ${{ env.ARTIFACTS_DIR }}/upm-tarball/*.tgz
 
       - name: NuGet Login (Trusted Publishing)
         if: ${{ inputs.dry_run != true }}
@@ -101,25 +170,97 @@ jobs:
         env:
           NUGET_API_KEY: ${{ steps.nuget-login.outputs.NUGET_API_KEY }}
         run: |
-          dotnet nuget push "${{ env.ARTIFACTS_DIR }}/*.nupkg" \
+          dotnet nuget push "${{ env.ARTIFACTS_DIR }}/nuget/*.nupkg" \
             --api-key "$NUGET_API_KEY" \
             --source https://api.nuget.org/v3/index.json \
             --skip-duplicate
+
+      - name: Publish UPM branch and tag
+        if: ${{ inputs.dry_run != true }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PKG_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          WORK_DIR="/tmp/upm-repo"
+          REPO_URL="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+          rm -rf "$WORK_DIR"
+          mkdir -p "$WORK_DIR"
+          cd "$WORK_DIR"
+
+          git init
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add origin "$REPO_URL"
+
+          if git ls-remote --exit-code --heads origin upm >/dev/null 2>&1; then
+            git fetch --depth=1 origin upm
+            git checkout -B upm FETCH_HEAD
+            find . -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
+          else
+            git checkout --orphan upm
+          fi
+
+          cp -r "${GITHUB_WORKSPACE}/${{ env.ARTIFACTS_DIR }}/upm-pkg/." .
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "UPM branch content unchanged."
+          else
+            git commit -m "chore(upm): release v${PKG_VERSION}"
+          fi
+
+          git push origin HEAD:refs/heads/upm
+
+          UPM_TAG="upm-v${PKG_VERSION}"
+          git tag -f "$UPM_TAG"
+          git push -f origin "refs/tags/${UPM_TAG}"
 
       - name: Create GitHub Release
         if: ${{ github.ref_type == 'tag' && inputs.dry_run != true }}
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PKG_VERSION: ${{ steps.version.outputs.version }}
         run: |
           TAG="${GITHUB_REF_NAME}"
-          FLAGS=(--generate-notes --title "$TAG")
+          UPM_TAG="upm-v${PKG_VERSION}"
+
+          RELEASE_NOTES=$(cat <<EOF
+          ### 📦 安装方式
+
+          #### 1. 纯 C# / 命令行（NuGet Tool）
+          \`\`\`bash
+          dotnet tool install --global zxjun2002.ConfGen.Tool --version ${PKG_VERSION}
+          # 或更新
+          dotnet tool update --global zxjun2002.ConfGen.Tool --version ${PKG_VERSION}
+          \`\`\`
+
+          #### 2. Unity Package Manager（Git URL）
+          打开 **Window -> Package Manager -> + -> Add package from git URL...**：
+          - 锁定此版本：\`https://github.com/${GITHUB_REPOSITORY}.git#${UPM_TAG}\`
+          - 追踪最新版：\`https://github.com/${GITHUB_REPOSITORY}.git#upm\`
+
+          #### 3. 手动下载（Assets）
+          - Unity 离线导入：下载下方 \`com.zxjun2002.confgen-${PKG_VERSION}.tgz\`，在 Package Manager 中选择 **Add package from tarball...**
+          - NuGet 本地源：下载下方 \`zxjun2002.ConfGen.Tool.${PKG_VERSION}.nupkg\`
+          EOF
+          )
+
+          FLAGS=(--generate-notes --title "$TAG" --notes "$RELEASE_NOTES")
           if [ "${{ steps.version.outputs.is_prerelease }}" = "true" ]; then
             FLAGS+=(--prerelease)
           fi
 
+          ASSETS=(
+            "${{ env.ARTIFACTS_DIR }}"/nuget/*.nupkg
+            "${{ env.ARTIFACTS_DIR }}"/upm-tarball/*.tgz
+          )
+
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" "${{ env.ARTIFACTS_DIR }}"/*.nupkg --clobber
+            gh release edit "$TAG" --notes "$RELEASE_NOTES"
+            gh release upload "$TAG" "${ASSETS[@]}" --clobber
           else
-            gh release create "$TAG" "${{ env.ARTIFACTS_DIR }}"/*.nupkg "${FLAGS[@]}"
+            gh release create "$TAG" "${ASSETS[@]}" "${FLAGS[@]}"
           fi

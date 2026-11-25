@@ -2,7 +2,11 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+#if NET6_0_OR_GREATER
 using System.Text.Json;
+#else
+using Newtonsoft.Json;
+#endif
 
 public static partial class ConfGen
 {
@@ -68,9 +72,13 @@ public static partial class ConfGen
 
     static T? ReadJson<T>(string path)
     {
-        var opt = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
         var json = File.ReadAllText(path);
+#if NET6_0_OR_GREATER
+        var opt = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
         return JsonSerializer.Deserialize<T>(json, opt);
+#else
+        return JsonConvert.DeserializeObject<T>(json);
+#endif
     }
 
     static string SchemaPathFor(string tablePath) => tablePath + ".schema.json";

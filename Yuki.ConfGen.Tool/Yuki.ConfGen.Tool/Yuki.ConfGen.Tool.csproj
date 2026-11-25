@@ -18,9 +18,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="CsvHelper" Version="30.0.1" />
-    <PackageReference Include="ExcelDataReader" Version="3.6.0" />
-    <PackageReference Include="ExcelDataReader.DataSet" Version="3.6.0" />
+    <ProjectReference Include="..\Yuki.ConfGen.Core\Yuki.ConfGen.Core.csproj" />
     <PackageReference Include="MemoryPack" Version="1.21.4" />
     <Compile Include="..\Shared\Generated\Conf\**\*.cs"
             Link="Generated\%(RecursiveDir)%(Filename)%(Extension)">

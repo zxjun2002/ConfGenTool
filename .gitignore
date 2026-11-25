@@ -1,2 +1,5 @@
-﻿Yuki.ConfGen.Tool/Yuki.ConfGen.Tool/bin
-Yuki.ConfGen.Tool/Yuki.ConfGen.Tool/obj
+﻿**/bin/
+**/obj/
+**/__pycache__/
+*.pyc
+artifacts/
