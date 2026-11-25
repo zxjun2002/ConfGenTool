@@ -1,0 +1,25 @@
+{
+  "name": "com.zxjun2002.confgen",
+  "version": "1.0.11",
+  "displayName": "Yuki ConfGen",
+  "description": "Config table generator (CSV/Excel + Schema -> C# ConfData/RacastSet + MemoryPack .bytes) for Unity Editor.",
+  "unity": "2021.3",
+  "author": {
+    "name": "Yuki",
+    "url": "https://github.com/zxjun2002/ConfGenTool"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zxjun2002/ConfGenTool.git"
+  },
+  "keywords": [
+    "config",
+    "excel",
+    "csv",
+    "memorypack",
+    "codegen"
+  ],
+  "dependencies": {
+    "com.unity.nuget.newtonsoft-json": "3.2.1"
+  }
+}
