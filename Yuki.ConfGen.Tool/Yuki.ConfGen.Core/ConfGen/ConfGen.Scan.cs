@@ -14,7 +14,7 @@ public static partial class ConfGen
     static GenCodeContent ScanInput(string inputDir, string side = "ALL")
     {
         side = NormalizeSide(side);
-        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+        try { Encoding.RegisterProvider(CodePagesEncodingProvider.Instance); } catch { /* ignore if already registered or unsupported */ }
 
         var result = new GenCodeContent { classes = new List<ClassContent>() };
 

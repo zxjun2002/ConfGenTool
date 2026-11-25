@@ -227,28 +227,29 @@ jobs:
           TAG="${GITHUB_REF_NAME}"
           UPM_TAG="upm-v${PKG_VERSION}"
 
-          RELEASE_NOTES=$(cat <<EOF
-          ### 📦 安装方式
+          cat <<'EOF' > /tmp/release-notes.md
+          ### 安装方式
 
           #### 1. 纯 C# / 命令行（NuGet Tool）
-          \`\`\`bash
-          dotnet tool install --global zxjun2002.ConfGen.Tool --version ${PKG_VERSION}
+          ```bash
+          dotnet tool install --global zxjun2002.ConfGen.Tool --version __VERSION__
           # 或更新
-          dotnet tool update --global zxjun2002.ConfGen.Tool --version ${PKG_VERSION}
-          \`\`\`
+          dotnet tool update --global zxjun2002.ConfGen.Tool --version __VERSION__
+          ```
 
           #### 2. Unity Package Manager（Git URL）
           打开 **Window -> Package Manager -> + -> Add package from git URL...**：
-          - 锁定此版本：\`https://github.com/${GITHUB_REPOSITORY}.git#${UPM_TAG}\`
-          - 追踪最新版：\`https://github.com/${GITHUB_REPOSITORY}.git#upm\`
+          - 锁定此版本：`https://github.com/__REPO__.git#__UPM_TAG__`
+          - 追踪最新版：`https://github.com/__REPO__.git#upm`
 
           #### 3. 手动下载（Assets）
-          - Unity 离线导入：下载下方 \`com.zxjun2002.confgen-${PKG_VERSION}.tgz\`，在 Package Manager 中选择 **Add package from tarball...**
-          - NuGet 本地源：下载下方 \`zxjun2002.ConfGen.Tool.${PKG_VERSION}.nupkg\`
+          - Unity 离线导入：下载下方 `com.zxjun2002.confgen-__VERSION__.tgz`，在 Package Manager 中选择 **Add package from tarball...**
+          - NuGet 本地源：下载下方 `zxjun2002.ConfGen.Tool.__VERSION__.nupkg`
           EOF
-          )
 
-          FLAGS=(--generate-notes --title "$TAG" --notes "$RELEASE_NOTES")
+          sed -i "s|__VERSION__|${PKG_VERSION}|g; s|__REPO__|${GITHUB_REPOSITORY}|g; s|__UPM_TAG__|${UPM_TAG}|g" /tmp/release-notes.md
+
+          FLAGS=(--generate-notes --title "$TAG" --notes-file /tmp/release-notes.md)
           if [ "${{ steps.version.outputs.is_prerelease }}" = "true" ]; then
             FLAGS+=(--prerelease)
           fi
@@ -259,7 +260,7 @@ jobs:
           )
 
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release edit "$TAG" --notes "$RELEASE_NOTES"
+            gh release edit "$TAG" --notes-file /tmp/release-notes.md
             gh release upload "$TAG" "${ASSETS[@]}" --clobber
           else
             gh release create "$TAG" "${ASSETS[@]}" "${FLAGS[@]}"
